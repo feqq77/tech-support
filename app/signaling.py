@@ -161,8 +161,12 @@ class SignalingClient:
                     if msg["type"] == protocol.MSG_PING:
                         await self.send({"type": protocol.MSG_PONG})
                         continue
-                    if msg["type"] in (protocol.MSG_PONG,):
-                        continue
+                    if msg["type"] == protocol.MSG_PONG:
+                        # Plain keepalive pong: ignore.  A pong carrying the
+                        # pairing state is forwarded so the app can recover a
+                        # lost "peer-joined" notification.
+                        if msg.get("peer") is None:
+                            continue
                     if self.on_message:
                         await self.on_message(msg)
                 elif item.type in (

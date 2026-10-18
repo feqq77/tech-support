@@ -14,7 +14,7 @@ by the fixtures themselves):
 .venv/bin/python -m pytest --no-header -q
 ```
 
-**Result: 51/51 passing** (verified with three consecutive full-suite runs plus
+**Result: 53/53 passing** (verified with three consecutive full-suite runs plus
 repeated capture+input runs after a race fix, see §1.2).
 
 | File | Tests | What it proves |
@@ -23,8 +23,8 @@ repeated capture+input runs after a race fix, see §1.2).
 | `tests/test_coords.py` | 5 | Normalized (0..1) → root-window pixel mapping incl. window offsets and video-resize scaling |
 | `tests/test_capture.py` | 5 | Real pixel capture from the selected display (XShm path); captured frames contain the drawn pattern, not a black frame |
 | `tests/test_input.py` | 7 | XTEST pointer motion, button clicks, scroll (wheel 4/5), key presses (incl. Shift) verified against **real X events** delivered to a mapped window |
-| `tests/test_signaling.py` | 7 | Pairing by code, signal relay, technician-token auth (constant-time compare), fixed support code `1234` accepted, wrong code rejected with a real message, `--code` override, no leak between concurrent sessions |
-| `tests/test_e2e.py` | 4 | Full aiortc WebRTC session: consent flow, real video frames, control messages injected as X input, deny-paths (view denied → no video, control denied → no input), unreachable signaling → real error text |
+| `tests/test_signaling.py` | 8 | Pairing by code, signal relay, technician-token auth (constant-time compare), fixed support code `1234` accepted, wrong code rejected with a real message, `--code` override, no leak between concurrent sessions, keepalive pong reports the pairing state |
+| `tests/test_e2e.py` | 5 | Full aiortc WebRTC session: consent flow, real video frames, control messages injected as X input, deny-paths (view denied → no video, control denied → no input), unreachable signaling → real error text, lost `peer-joined` notification self-heals via the keepalive pong |
 | `tests/test_technician_server.py` | 6 | Console server binds `127.0.0.1` only, WS proxy relays both directions, injects the tech token server-side, reports unreachable signaling |
 | `tests/test_install_scripts.py` | 7 | `get.sh` (the one-line installer) run for real against a local fake release server: download + checksum verify, auto-launch (verified by the app actually starting), `--no-launch`, launch-failure reporting, latest-release lookup, bad-checksum rejection, missing-release error text, non-x86_64 source fallback |
 | `tests/test_ui.py` | 2 | Customer UI shows exactly the required labels on the required screens |
@@ -121,24 +121,47 @@ observing the X pointer land at the mapped coordinate (959, 199).
   success. Install/uninstall round-trip leaves no stray processes or files.
 - **One-line installer** (`get.sh`): tested at unit level against a local fake
   release server (`tests/test_install_scripts.py`), and then **verified for
-  real on 2026-10-17 against live GitHub** (repository `feqq77/tech-support`,
-  release `v0.1.0`): the exact customer command
+  real on 2026-10-17 against live GitHub** (repository `feqq77/tech-support`):
+  the exact customer command
   `curl -fsSL https://raw.githubusercontent.com/feqq77/tech-support/main/get.sh | bash`
   was run from a clean home directory — it resolved the latest release through
   the GitHub API, downloaded the 106 MB AppImage, verified its published
   `.sha256`, installed `~/.local/bin/tech-support`, and the customer app
-  process was observed running on a test display.
+  process was observed running on a test display. Repeated after every release
+  upload (latest: `v0.3.0`).
+- **Live matchmaker over the real internet path** (2026-10-18, deployment in
+  [`DEPLOY.md`](DEPLOY.md) § 0 — the matchmaker runs on the operator's PC
+  behind Tailscale Funnel): the public DNS name resolves to Tailscale's
+  internet relays, `/healthz` answers through the public path with valid TLS,
+  and scripted customer + technician clients pairing on code `1234` over that
+  path exchanged `welcome` → `peer-joined` → relayed SDP/ICE correctly in
+  **31 consecutive runs** (6 × public, 1 × local, 20 × public soak, plus 4
+  local). Honesty note: in an earlier 3 of ~11 runs the one-shot `peer-joined`
+  notification was silently lost (both over the relay and once on loopback);
+  it could not be reproduced after instrumentation (31/31 clean, server-side
+  logs show every send and every pairing with empty queues — no stale peers).
+  Rather than ship an unexplained intermittent, the protocol now carries the
+  pairing state in every keepalive pong (`{"type":"pong","peer":...}`): if a
+  notification is ever lost, the customer app recovers within one keepalive
+  interval (≤ 20 s) and proceeds to the consent screen. Regression tests:
+  `test_ping_pong_reports_pairing_state` (server) and
+  `test_lost_peer_joined_recovers_via_keepalive` (customer app).
 
 ## 6. Known limitations (stated honestly)
 
 1. **Two physical computers**: this development machine is a single host. The
-   LAN demo (§4) runs the real stack over a real network interface, but a
-   genuine two-machine, cross-internet session has **not** been performed. For
-   that, deploy the signaling server and a TURN relay as described in
-   [`DEPLOY.md`](DEPLOY.md) and test from a second computer on another network.
-2. **Cross-internet NAT traversal** relies on the TURN configuration in
-   `docs/DEPLOY.md` + `server/deploy/coturn.conf`; it has not been validated
-   against real carrier-grade NAT from outside this network.
+   LAN demo (§4) runs the real stack over a real network interface, and the
+   live deployment (§5) exercises the real internet path (public DNS, TLS,
+   Tailscale's internet relays, scripted pairing) — but a session with a
+   second physical machine on another network has **not** been performed.
+   Test that before relying on this for real customers.
+2. **No TURN relay in the current deployment**: the quick path
+   ([`DEPLOY.md`](DEPLOY.md) § 0) pairs peers with STUN only. Direct WebRTC
+   works for most home networks, but customers behind symmetric NAT / CGNAT
+   (some mobile hotspots, strict corporate networks) may connect to the
+   matchmaker yet see no video. The coturn configuration in
+   `server/deploy/coturn.conf` has not been validated from outside this
+   network; the VPS + coturn path removes this limitation.
 3. **Code `1234` is the fixed alpha code by design** — chosen for a small,
    known community. Change it with the signaling server's `--code` option if
    needed and move to generated one-time codes before any wider deployment.
@@ -150,7 +173,7 @@ observing the X pointer land at the mapped coordinate (959, 199).
 
 ```bash
 pkill -x Xvfb 2>/dev/null        # tests start their own Xvfb :106
-.venv/bin/python -m pytest --no-header -q          # 51 tests
+.venv/bin/python -m pytest --no-header -q          # 53 tests
 .venv/bin/python -m app.customer_app --self-test-ui
 ./build_appimage.sh                                  # builds dist/*.AppImage
 ```

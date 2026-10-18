@@ -267,6 +267,14 @@ class CustomerSession:
     async def _on_signaling_state(self, message: str) -> None:
         log.info("signaling state: %s", message)
 
+    async def _on_peer_available(self) -> None:
+        """A technician is paired with this session (idempotent)."""
+        self._peer_present = True
+        self._signaling.auto_reconnect = False
+        if self.state in (CustomerState.WAITING, CustomerState.CONNECTING):
+            self._set_state(CustomerState.CONSENT, "technician is ready")
+            self.cb.on_technician_present()
+
     async def _on_signal_message(self, msg: dict) -> None:
         mtype = msg.get("type")
         if mtype == protocol.MSG_WELCOME:
@@ -283,11 +291,12 @@ class CustomerSession:
             else:
                 self._set_state(CustomerState.WAITING, "waiting for technician")
         elif mtype == protocol.MSG_PEER_JOINED:
-            self._peer_present = True
-            self._signaling.auto_reconnect = False
-            if self.state in (CustomerState.WAITING, CustomerState.CONNECTING):
-                self._set_state(CustomerState.CONSENT, "technician is ready")
-                self.cb.on_technician_present()
+            await self._on_peer_available()
+        elif mtype == protocol.MSG_PONG:
+            # Self-healing: a pong that reports a paired technician recovers
+            # from a lost "peer-joined" notification (keepalive pings repeat).
+            if msg.get("peer") == protocol.ROLE_TECHNICIAN:
+                await self._on_peer_available()
         elif mtype == protocol.MSG_PEER_LEFT:
             self._peer_present = False
             if self._connected and self.state == CustomerState.ACTIVE:

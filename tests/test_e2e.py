@@ -231,6 +231,59 @@ async def test_full_session_with_view_and_control(xvfb_display, signaling_server
         close_win()
 
 
+async def test_lost_peer_joined_recovers_via_keepalive(xvfb_display, signaling_server,
+                                                       monkeypatch):
+    """A lost "peer-joined" notification must not wedge the customer app.
+
+    The customer's keepalive ping asks the server for the pairing state, and a
+    pong naming a technician restores the consent step."""
+    from app import protocol
+
+    original = CustomerSession._on_signal_message
+    dropped = {"done": False}
+
+    async def dropping(self, msg):
+        if msg.get("type") == protocol.MSG_PEER_JOINED and not dropped["done"]:
+            dropped["done"] = True  # simulate a one-shot notification lost in transit
+            return
+        await original(self, msg)
+
+    monkeypatch.setattr(CustomerSession, "_on_signal_message", dropping)
+
+    cb = Recorder(consent=None)
+    cfg = CustomerConfig(
+        signaling_url=signaling_server.ws_url, code="1234", display=xvfb_display,
+        fps=8, ice_servers=[], media_timeout=10, connect_timeout=25,
+    )
+    session = CustomerSession(cfg, cb)
+    cb.session = session
+    session.start_background()
+
+    assert await wait_until(lambda: CustomerState.WAITING in [s for s, _ in cb.states]), \
+        f"customer never reached WAITING: {cb.states}"
+
+    async with ClientSession() as s:
+        tech = await s.ws_connect(signaling_server.ws_url)
+        await tech.send_json({"type": "hello", "role": "technician", "code": "1234",
+                              "token": TECH_TOKEN})
+        await tech.receive(timeout=10)  # welcome
+
+        # The dropped notification leaves the customer waiting...
+        assert await wait_until(lambda: dropped["done"]), "peer-joined never arrived"
+        assert not cb.technician_arrived.is_set()
+        assert CustomerState.CONSENT not in [st for st, _ in cb.states]
+
+        # ...until the next keepalive ping reports the paired technician.
+        await session._signaling.send({"type": protocol.MSG_PING})
+        assert await wait_until(lambda: cb.technician_arrived.is_set()), \
+            f"customer never recovered from the lost notification: {cb.states}"
+        assert CustomerState.CONSENT in [st for st, _ in cb.states]
+
+        await tech.close()
+    await session.end_session("test complete")
+    await asyncio.sleep(0.2)
+
+
 async def test_control_denied_blocks_input(xvfb_display, signaling_server):
     """View-only consent: video flows, input events are ignored."""
     cb = Recorder(consent=(True, False))

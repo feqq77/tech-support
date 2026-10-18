@@ -184,7 +184,7 @@ customer computer                        technician computer
 app/            customer application (UI, capture, input, WebRTC session)
 technician/     technician console server + web UI (Chrome)
 server/         signaling server + deployment templates (nginx, coturn, systemd)
-tests/          51 automated tests incl. real-Chrome end-to-end (docs/TESTING.md)
+tests/          53 automated tests incl. real-Chrome end-to-end (docs/TESTING.md)
 docs/           deployment, build and testing documentation
 get.sh          one-line customer installer (curl | bash, installs + auto-launches)
 install.sh      dependency bootstrap installer (source tree)

@@ -103,6 +103,34 @@ async def test_pairing_and_signal_relay(signaling_server):
         await tech_s.close()
 
 
+async def test_ping_pong_reports_pairing_state(signaling_server):
+    """Keepalive pong carries the pairing state.
+
+    "peer-joined" is a one-shot notification; if it is ever lost, the client's
+    repeating keepalive ping must be able to recover the pairing state."""
+    cust_s, cust = await ws_connect(signaling_server.ws_url)
+    try:
+        await cust.send_json({"type": "hello", "role": "customer", "code": "1234"})
+        msg = await recv_json(cust)
+        assert msg["type"] == "welcome"
+
+        await cust.send_json({"type": "ping"})
+        msg = await recv_until(cust, "pong")
+        assert msg["peer"] is None
+
+        tech_s, tech = await ws_connect(signaling_server.ws_url)
+        try:
+            await tech.send_json({"type": "hello", "role": "technician", "code": "1234",
+                                  "token": TECH_TOKEN})
+            await recv_until(tech, "welcome")
+
+            await cust.send_json({"type": "ping"})
+            msg = await recv_until(cust, "pong")
+            assert msg["peer"] == "technician"
+        finally:
+            await tech_s.close()
+    finally:
+        await cust_s.close()
 async def test_no_cross_session_leak(signaling_server):
     """Two concurrent sessions on the shared code must not see each other's traffic."""
     a_s, a = await ws_connect(signaling_server.ws_url)

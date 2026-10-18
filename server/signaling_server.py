@@ -66,6 +66,9 @@ class SessionManager:
         """Register a peer and try to pair it.  Returns the paired peer (if any)."""
         async with self._lock:
             room = self.rooms.setdefault(peer.code, {"customer": [], "technician": []})
+            log.info("join %s session=%s: waiting customers=%d technicians=%d",
+                     peer.role, peer.session_id,
+                     len(room["customer"]), len(room["technician"]))
             if peer.role == protocol.ROLE_CUSTOMER:
                 waiting_techs = room["technician"]
                 tech = waiting_techs.pop(0) if waiting_techs else None
@@ -194,7 +197,7 @@ def build_app(tech_token: str, ice_servers: list,
                         session_id=secrets.token_urlsafe(9),
                     )
                     partner = await manager.join(peer)
-                    await ws.send_json({
+                    await _send(peer, {
                         "type": protocol.MSG_WELCOME,
                         "session": peer.session_id,
                         "peer": partner.role if partner else None,
@@ -216,7 +219,13 @@ def build_app(tech_token: str, ice_servers: list,
                 if mtype == protocol.MSG_LEAVE:
                     break
                 if mtype == protocol.MSG_PING:
-                    await ws.send_json({"type": protocol.MSG_PONG})
+                    await ws.send_json({
+                        "type": protocol.MSG_PONG,
+                        # Answering with the pairing state lets a client
+                        # recover if a one-shot "peer-joined" notification
+                        # was ever lost (keepalive pings repeat).
+                        "peer": peer.peer.role if peer.peer else None,
+                    })
                     continue
                 if mtype == protocol.MSG_PONG:
                     continue
@@ -260,10 +269,17 @@ def build_app(tech_token: str, ice_servers: list,
 
     async def _send(peer: Peer, msg: dict) -> None:
         try:
-            if not peer.ws.closed:
-                await peer.ws.send_json(msg)
+            if peer.ws.closed:
+                log.warning("dropping %r for %s session=%s: websocket already closed",
+                            msg.get("type"), peer.role, peer.session_id)
+                return
+            log.info("send %r to %s session=%s", msg.get("type"), peer.role,
+                     peer.session_id)
+            await peer.ws.send_json(msg)
         except Exception:
-            pass
+            log.warning("failed to send %r to %s session=%s",
+                        msg.get("type"), peer.role, peer.session_id,
+                        exc_info=True)
 
     app.router.add_get("/healthz", healthz)
     app.router.add_get("/ws", ws_handler)
