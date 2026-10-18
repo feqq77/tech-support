@@ -208,9 +208,28 @@ observing the X pointer land at the mapped coordinate (959, 199).
 
 ```bash
 pkill -x Xvfb 2>/dev/null        # tests start their own Xvfb :106
-.venv/bin/python -m pytest --no-header -q          # 53 tests
+.venv/bin/python -m pytest --no-header -q          # 56 tests
 .venv/bin/python -m app.customer_app --self-test-ui
 ./build_appimage.sh                                  # builds dist/*.AppImage
 ```
 
 Screenshots and demo evidence land in `tests/artifacts/`.
+
+## Live 1:1 verification (real desktop, real console)
+
+Beyond the automated suite, the screen sharing is verified end to end on the
+technician's own machine against the real matchmaker and the real console
+served at `127.0.0.1:8765`, driving the customer app's actual UI
+(`tech check` → `1234` → `ok` → consent `yes`) and checking, from real Chrome:
+
+1. the `<video>` track is the display's **native size** (no downscale);
+2. an 8×6 grid of mean colours in the rendered frame matches an independent
+   X11 grab of the desktop (all cells within VP8 noise);
+3. a solid marker window at a known rect appears in the frame at the same
+   place with the same colour;
+4. keystrokes sent from the console reach a real X client on the customer
+   display.
+
+The whole checklist passes both with `--capture-backend auto` and with
+`--capture-backend pipewire` (the compositor path used on Wayland/NVIDIA
+desktops, where X11 grabs return black).

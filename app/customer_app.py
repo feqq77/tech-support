@@ -214,6 +214,7 @@ class CustomerApp(CustomerCallbacks):
             display=self.args.display,
             fps=self.args.fps,
             max_width=self.args.max_width,
+            capture_backend=self.args.capture_backend,
         )
         self.session = self._session_factory(cfg, self)
         self.session.start_background()
@@ -300,7 +301,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--code", default=cfg.support_code,
                         help="support code the customer must enter (default: 1234)")
     parser.add_argument("--fps", type=float, default=8.0)
-    parser.add_argument("--max-width", type=int, default=1280)
+    parser.add_argument("--max-width", type=int, default=0,
+                        help="downscale the stream to this width (0 = native 1:1)")
+    parser.add_argument("--capture-backend", default="auto",
+                        choices=["auto", "pipewire", "mss", "ffmpeg"],
+                        help="screen-capture backend (auto escalates from the "
+                             "X11 grabber to compositor capture when the grab "
+                             "comes back blank, e.g. NVIDIA/Wayland desktops)")
     parser.add_argument("--self-test-ui", action="store_true",
                         help="run the UI flow self test and exit")
     return parser

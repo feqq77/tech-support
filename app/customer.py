@@ -53,7 +53,8 @@ class CustomerConfig:
     code: str
     display: str
     fps: float = 8.0
-    max_width: int = 1280
+    max_width: int = 0             # 0 = never downscale (send the desktop 1:1)
+    capture_backend: str = "auto"  # auto | pipewire | mss | ffmpeg
     ice_servers: Optional[list] = None  # overrides server-provided list
     connect_timeout: float = 25.0      # WebRTC establishment watchdog
     media_timeout: float = 15.0        # signaling link unavailable after start
@@ -404,7 +405,9 @@ class CustomerSession:
                 asyncio.create_task(grace())
 
         if self._consent_view:
-            self._capturer = ScreenCapturer(cfg.display, fps=cfg.fps)
+            self._capturer = ScreenCapturer(
+                cfg.display, fps=cfg.fps, backend=cfg.capture_backend
+            )
             self._capturer.prepare()
             self._capturer.start()
             self._track = ScreenVideoTrack.create(self._capturer, cfg.fps, cfg.max_width)

@@ -141,7 +141,7 @@ customer computer                        technician computer
 ┌───────────────────────┐                ┌────────────────────────────┐
 │ customer app (Tk)     │                │ Chrome                     │
 │  consent UI           │                │  http://127.0.0.1:8765     │
-│  X11 capture (XShm)   │◄══ WebRTC ════►│   video + input data chan. │
+│  screen capture       │◄══ WebRTC ════►│   video + input data chan. │
 │  XTEST input inject   │  DTLS-SRTP     └─────────┬──────────────────┘
 └──────────┬────────────┘                          │ localhost WS
            │ wss                                   ▼
@@ -152,9 +152,17 @@ customer computer                        technician computer
                         └──────────────┘
 ```
 
-* **Screen capture**: real pixels of the *selected* X display (`:0`, `:106`,
-  `127.0.0.1:106`, …) via XShm (mss), with an ffmpeg `x11grab` fallback. The
-  display is verified before capture starts; failures are reported exactly.
+* **Screen capture**: real pixels of the *selected* display (`:0`, `:106`,
+  `127.0.0.1:106`, …). The default `auto` backend grabs via XShm (mss), but
+  several compositors keep the pixels off the X screen (Wayland/XWayland, and
+  NVIDIA's GLX compositor, which makes root grabs return pure black). When the
+  grab comes back blank, `auto` escalates to the compositor's own stream
+  (GNOME's `org.gnome.Mutter.ScreenCast` → PipeWire, `app/pipewiregrab.py`,
+  run with the system python3), and mid-session blank frames self-heal the
+  same way. An ffmpeg `x11grab` fallback exists for X11 setups where mss
+  cannot initialise. `--capture-backend auto|pipewire|mss|ffmpeg` selects
+  explicitly. The display is verified before capture starts; failures are
+  reported exactly — never with a silent black stream.
 * **Input control**: XTEST injection into that same display — mouse movement,
   buttons, wheel scrolling, keyboard (DOM key names mapped to X keysyms).
   Coordinates from the technician's (resized) video are sent normalized and
