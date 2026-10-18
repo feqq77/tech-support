@@ -33,16 +33,17 @@ Build-time requirements: `curl`, `tar`, internet access, ~600 MB free disk.
 
 ## Publish a release
 
-1. Create the GitHub repository and put its `owner/repo` name in the single
-   `REPO="OWNER/tech-support"` line at the top of `get.sh`.
-2. Create a release in the repository (e.g. tag `v1.0`).
+1. The GitHub repository is `feqq77/tech-support`, and `get.sh` already
+   contains that `REPO=` value.
+2. Create a release in the repository (e.g. tag `v1.0`) — `get.sh` resolves
+   the **latest** release automatically.
 3. Upload both `dist/TechSupport-Customer-<arch>.AppImage` and
    `dist/TechSupport-Customer-<arch>.AppImage.sha256` as release assets,
    **keeping those exact file names** — `get.sh` downloads
    `TechSupport-Customer-x86_64.AppImage` (+ `.sha256`) from
-   `https://github.com/OWNER/REPO/releases/download/<tag>/`.
+   `https://github.com/feqq77/tech-support/releases/download/<tag>/`.
 4. Note the asset base URL, e.g.
-   `https://github.com/YOUR/REPO/releases/download/v1.0`.
+   `https://github.com/feqq77/tech-support/releases/download/v1.0`.
 
 > No download URL is hard-coded anywhere: until a release is actually
 > published, install from the source tree. The installers refuse to proceed
@@ -55,7 +56,7 @@ After the first release is published, customers install and start the app
 with one short command (works on any Linux distribution and version):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/YOUR/REPO/main/get.sh | bash
+curl -fsSL https://raw.githubusercontent.com/feqq77/tech-support/main/get.sh | bash
 ```
 
 This downloads the released AppImage, verifies its `.sha256`, installs
@@ -66,7 +67,7 @@ The `install.sh --appimage` route still exists for installing from a source
 checkout:
 
 ```bash
-RELEASE_BASE_URL=https://github.com/YOUR/REPO/releases/download/v1.0 ./install.sh --appimage
+RELEASE_BASE_URL=https://github.com/feqq77/tech-support/releases/download/v1.0 ./install.sh --appimage
 ```
 
 The installer downloads the AppImage, verifies `sha256sum -c` against the

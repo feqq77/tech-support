@@ -119,11 +119,15 @@ observing the X pointer land at the mapped coordinate (959, 199).
   observed running ("The app is starting now."), and with an unusable display
   the installer printed the app's real `xdpyinfo` error instead of claiming
   success. Install/uninstall round-trip leaves no stray processes or files.
-- **One-line installer** (`get.sh`): tested end-to-end against a local fake
-  release server (see the `tests/test_install_scripts.py` row above) — the
-  GitHub download URLs themselves cannot be exercised until the repository and
-  its first release exist (the `REPO=` placeholder must be filled in by the
-  maintainer; the script says so when it is still in place).
+- **One-line installer** (`get.sh`): tested at unit level against a local fake
+  release server (`tests/test_install_scripts.py`), and then **verified for
+  real on 2026-10-17 against live GitHub** (repository `feqq77/tech-support`,
+  release `v0.1.0`): the exact customer command
+  `curl -fsSL https://raw.githubusercontent.com/feqq77/tech-support/main/get.sh | bash`
+  was run from a clean home directory — it resolved the latest release through
+  the GitHub API, downloaded the 106 MB AppImage, verified its published
+  `.sha256`, installed `~/.local/bin/tech-support`, and the customer app
+  process was observed running on a test display.
 
 ## 6. Known limitations (stated honestly)
 
