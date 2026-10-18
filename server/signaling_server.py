@@ -41,6 +41,11 @@ log = logging.getLogger("support.signaling-server")
 
 DEFAULT_STUN = ["stun:stun.l.google.com:19302"]
 
+# Seconds of silence after which a waiting peer counts as dead.  Real clients
+# ping every 20 s, so 90 s tolerates slow links while still reclaiming
+# half-open sockets and orphaned bridges quickly.
+STALE_AFTER = 90.0
+
 
 @dataclass
 class Peer:
@@ -49,6 +54,10 @@ class Peer:
     code: str
     session_id: str
     joined_at: float = field(default_factory=time.time)
+    # Last time the client showed any sign of life (a keepalive ping counts).
+    # A peer whose socket went half-open never flips ws.closed; silence is the
+    # only reliable signal that it is gone.
+    last_seen: float = field(default_factory=time.monotonic)
     peer: Optional["Peer"] = None
 
 
@@ -62,6 +71,24 @@ class SessionManager:
         self.rooms: dict[str, dict[str, list[Peer]]] = {}
         self._lock = asyncio.Lock()
 
+    async def _pop_live(self, queue: list[Peer]) -> Optional[Peer]:
+        """Pop the oldest waiting peer whose link is still alive.
+
+        A peer whose websocket died without a clean disconnect must never be
+        handed out as a partner: pairing with it would wedge the joiner.
+        Half-open sockets never flip ws.closed, so silence is checked too
+        (every real client sends a keepalive ping at least every 20 s).
+        """
+        now = time.monotonic()
+        while queue:
+            cand = queue.pop(0)
+            dead = cand.ws.closed or (now - cand.last_seen) > STALE_AFTER
+            if not dead:
+                return cand
+            log.warning("skipping dead %s session=%s from the waiting queue",
+                        cand.role, cand.session_id)
+        return None
+
     async def join(self, peer: Peer) -> Optional[Peer]:
         """Register a peer and try to pair it.  Returns the paired peer (if any)."""
         async with self._lock:
@@ -70,16 +97,14 @@ class SessionManager:
                      peer.role, peer.session_id,
                      len(room["customer"]), len(room["technician"]))
             if peer.role == protocol.ROLE_CUSTOMER:
-                waiting_techs = room["technician"]
-                tech = waiting_techs.pop(0) if waiting_techs else None
+                tech = await self._pop_live(room["technician"])
                 if tech is None:
                     room["customer"].append(peer)
                 else:
                     peer.peer = tech
                     tech.peer = peer
                 return tech
-            waiting_customers = room["customer"]
-            cust = waiting_customers.pop(0) if waiting_customers else None
+            cust = await self._pop_live(room["customer"])
             if cust is None:
                 room["technician"].append(peer)
             else:
@@ -97,8 +122,10 @@ class SessionManager:
             room = self.rooms.get(peer.code)
             if room is not None:
                 for lst in (room["customer"], room["technician"]):
-                    if peer in lst:
-                        lst.remove(peer)
+                    for i, other in enumerate(lst):
+                        if other is peer:  # identity: never rely on __eq__
+                            lst.pop(i)
+                            break
                 if not room["customer"] and not room["technician"]:
                     self.rooms.pop(peer.code, None)
             return partner
@@ -154,6 +181,8 @@ def build_app(tech_token: str, ice_servers: list,
             async for msg in ws:
                 if msg.type != WSMsgType.TEXT:
                     break
+                if peer is not None:
+                    peer.last_seen = time.monotonic()  # keepalive pings count
                 try:
                     data = protocol.decode(msg.data)
                 except protocol.ProtocolError as exc:

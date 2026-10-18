@@ -18,6 +18,8 @@ import json
 import logging
 import os
 import pathlib
+import time
+from collections import deque
 from typing import Optional
 
 import aiohttp
@@ -27,6 +29,13 @@ log = logging.getLogger("support.technician-server")
 
 STATIC_DIR = pathlib.Path(__file__).resolve().parent / "static"
 LOOPBACK = ("127.0.0.1", "::1", "localhost")
+
+# Reconnect-storm guard.  A runaway client (e.g. a stale page stuck in a
+# reconnect loop) would otherwise register a fresh technician session at the
+# matchmaker every few seconds and steal pairings with connections that die
+# immediately.  Legitimate use never approaches this rate.
+WS_RATE_WINDOW = 10.0   # seconds
+WS_RATE_MAX = 10        # websockets per window before the guard trips
 
 
 class TechnicianServer:
@@ -64,10 +73,20 @@ class TechnicianServer:
         async def healthz(_request: web.Request) -> web.Response:
             return web.json_response({"ok": True, "bound_to": self.host})
 
+        recent_ws: deque[float] = deque()
+
         async def ws_proxy(request: web.Request) -> web.WebSocketResponse:
             client_ip = request.remote
             if client_ip not in LOOPBACK:
                 return web.Response(status=403, text="loopback clients only")
+            now = time.monotonic()
+            while recent_ws and now - recent_ws[0] > WS_RATE_WINDOW:
+                recent_ws.popleft()
+            if len(recent_ws) >= WS_RATE_MAX:
+                log.warning("refusing technician websocket: reconnect storm guard")
+                return web.Response(status=429, text="too many reconnects — slow down")
+            recent_ws.append(now)  # accepted connections only: a runaway
+            # client must never starve a real one out of the window.
             ws = web.WebSocketResponse(max_msg_size=256 * 1024, heartbeat=30.0)
             await ws.prepare(request)
             log.info("technician UI connected from %s", client_ip)
@@ -117,6 +136,8 @@ class TechnicianServer:
                     except ValueError:
                         continue
                     if upstream is None or upstream.closed:
+                        if upstream_task is not None:
+                            upstream_task.cancel()
                         upstream = await connect_upstream()
                         upstream_task = asyncio.create_task(pump_upstream())
                     # Authenticate the technician; never trust a browser token.
@@ -125,6 +146,7 @@ class TechnicianServer:
                         data.setdefault("role", "technician")
                     await upstream.send_str(json.dumps(data))
             except web.HTTPBadGateway as exc:
+                log.warning("upstream connect failed: %s", exc.text)
                 if not ws.closed:
                     await ws.send_json({
                         "type": "error",
@@ -138,7 +160,10 @@ class TechnicianServer:
                 if upstream is not None and not upstream.closed:
                     try:
                         await upstream.send_str(json.dumps({"type": "leave"}))
-                        await upstream.close()
+                    except Exception:
+                        pass
+                    try:
+                        await asyncio.wait_for(upstream.close(), 5.0)  # must run even if the leave failed
                     except Exception:
                         pass
                 if upstream_task is not None:

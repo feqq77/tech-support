@@ -38,6 +38,8 @@ MUTED = "#5c6b7a"
 
 SUPPORT_CODE = "1234"
 
+SESSION_TEXT = "connected. the technician is working. give us a moment."
+
 
 class CustomerApp(CustomerCallbacks):
     def __init__(self, root: tk.Tk, args: argparse.Namespace) -> None:
@@ -46,8 +48,6 @@ class CustomerApp(CustomerCallbacks):
         self.session: CustomerSession | None = None
         self.expected_code = args.code
         self.code_var = tk.StringVar()
-        self.view_var = tk.BooleanVar(value=True)
-        self.control_var = tk.BooleanVar(value=True)
 
         root.title("Support")
         root.configure(bg=BG)
@@ -128,28 +128,19 @@ class CustomerApp(CustomerCallbacks):
         f.grid_columnconfigure(0, weight=1)
         inner = tk.Frame(f, bg=BG)
         inner.grid(row=0, column=0)
-        tk.Label(inner, text="a technician is ready to help",
+        tk.Label(inner, text="a technician is coming",
                  font=self.big, bg=BG, fg=FG).pack(pady=(0, 10))
-        tk.Label(inner, text="allow them to:", font=self.body, bg=BG, fg=MUTED).pack()
-        tk.Checkbutton(
-            inner, text="view my screen", font=self.body, bg=BG, fg=FG,
-            selectcolor="#ffffff", activebackground=BG, anchor="w",
-            variable=self.view_var,
-        ).pack(anchor="w", padx=90, pady=2)
-        tk.Checkbutton(
-            inner, text="control mouse and keyboard", font=self.body, bg=BG, fg=FG,
-            selectcolor="#ffffff", activebackground=BG, anchor="w",
-            variable=self.control_var,
-        ).pack(anchor="w", padx=90, pady=2)
+        tk.Label(inner, text="are you sure about this?",
+                 font=self.body, bg=BG, fg=MUTED).pack()
         row = tk.Frame(inner, bg=BG)
         row.pack(pady=22)
         tk.Button(
-            row, text="allow", font=self.body, fg="#ffffff", bg=ACCENT,
+            row, text="yes", font=self.body, fg="#ffffff", bg=ACCENT,
             activebackground=ACCENT_HOVER, relief="flat", bd=0, padx=30, pady=9,
             cursor="hand2", command=self.on_allow,
         ).pack(side="left", padx=8)
         tk.Button(
-            row, text="decline", font=self.body, fg="#ffffff", bg=DANGER,
+            row, text="no", font=self.body, fg="#ffffff", bg=DANGER,
             activebackground="#b23636", relief="flat", bd=0, padx=30, pady=9,
             cursor="hand2", command=self.on_decline,
         ).pack(side="left", padx=8)
@@ -230,12 +221,8 @@ class CustomerApp(CustomerCallbacks):
     def on_allow(self) -> None:
         if self.session is None:
             return
-        view = bool(self.view_var.get())
-        control = bool(self.control_var.get())
-        if not view and not control:
-            self.on_decline()
-            return
-        self.session.grant_consent(view, control)
+        # "yes" = the technician may see the screen and work on the machine.
+        self.session.grant_consent(True, True)
         self._show_session_screen()
 
     def on_decline(self) -> None:
@@ -258,7 +245,7 @@ class CustomerApp(CustomerCallbacks):
             log.info(message)
 
     def _show_session_screen(self) -> None:
-        self.session_status.config(text="connecting…")
+        self.session_status.config(text=SESSION_TEXT)
         self.session_detail.config(text="")
         self.show("session")
 
@@ -268,9 +255,7 @@ class CustomerApp(CustomerCallbacks):
         self.root.after(0, lambda: self._ui_state(state, message))
 
     def on_technician_present(self) -> None:
-        self.root.after(0, lambda: (
-            self.view_var.set(True), self.control_var.set(True), self.show("consent")
-        ))
+        self.root.after(0, lambda: self.show("consent"))
 
     def on_session_ended(self, reason: str) -> None:
         self.root.after(0, lambda: self._ui_ended(reason))
@@ -284,19 +269,8 @@ class CustomerApp(CustomerCallbacks):
         if state == CustomerState.WAITING:
             pass  # GETTING READY stays on screen while waiting
         elif state == CustomerState.CONSENT:
-            self.view_var.set(True)
-            self.control_var.set(True)
             self.show("consent")
-        elif state == CustomerState.ACTIVE:
-            sharing = "sharing screen"
-            if self.session._consent_control:
-                sharing += " · control allowed"
-            else:
-                sharing += " · viewing only"
-            self.session_status.config(text="connected")
-            self.session_detail.config(text=sharing)
-            self.show("session")
-        elif state == CustomerState.CONNECTING_SESSION:
+        elif state in (CustomerState.ACTIVE, CustomerState.CONNECTING_SESSION):
             self._show_session_screen()
 
     def _ui_ended(self, reason: str) -> None:
@@ -411,14 +385,31 @@ def run_self_test(root: tk.Tk, app: CustomerApp) -> int:
     check("ready screen shows 'GETTING READY'",
           len(ready_labels) == 1 and str(ready_labels[0].cget("text")) == "GETTING READY")
 
+    def collect(widget, kind):
+        out = []
+        for w in widget.winfo_children():
+            if isinstance(w, kind):
+                out.append(str(w.cget("text")))
+            out.extend(collect(w, kind))
+        return out
+
     app.on_technician_present()
     root.update()
     check("consent screen appears when technician is present",
           bool(app._frames["consent"].winfo_ismapped()))
+    consent_labels = collect(app._frames["consent"], tk.Label)
+    check("consent says 'a technician is coming'",
+          "a technician is coming" in consent_labels)
+    check("consent asks 'are you sure about this?'",
+          "are you sure about this?" in consent_labels)
+    check("consent offers exactly yes / no",
+          collect(app._frames["consent"], tk.Button) == ["yes", "no"])
     app.on_allow()
     root.update()
     check("session screen appears after allowing",
           bool(app._frames["session"].winfo_ismapped()))
+    check("session screen says the technician is working",
+          str(app.session_status.cget("text")) == SESSION_TEXT)
 
     root.destroy()
     if failures:

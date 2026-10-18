@@ -161,6 +161,61 @@ async def test_no_cross_session_leak(signaling_server):
         await t_s.close()
 
 
+async def test_dead_waiting_peers_are_skipped():
+    """A waiting peer whose websocket died must never be handed out.
+
+    Pairing a live customer with a dead technician would wedge the customer:
+    nothing would ever reach the real technician.  Regression test for the
+    zombie queue observed on the live matchmaker.
+    """
+    import types
+
+    from server.signaling_server import Peer, SessionManager
+
+    manager = SessionManager(tech_token=TECH_TOKEN, ice_servers=[],
+                             support_code="1234")
+    dead = Peer(ws=types.SimpleNamespace(closed=True), role="technician",
+                code="1234", session_id="deadtech0000")
+    await manager.join(dead)
+
+    live_customer = Peer(ws=types.SimpleNamespace(closed=False), role="customer",
+                         code="1234", session_id="livecust0000")
+    partner = await manager.join(live_customer)
+    assert partner is None, "customer was paired with a dead technician"
+    assert live_customer.peer is None
+    assert manager.stats()["waiting_customers"] == 1
+    assert manager.stats()["waiting_technicians"] == 0, "zombie stayed queued"
+
+    # a live technician arriving afterwards still pairs normally
+    live_tech = Peer(ws=types.SimpleNamespace(closed=False), role="technician",
+                     code="1234", session_id="livetech0000")
+    assert await manager.join(live_tech) is live_customer
+
+
+async def test_silent_waiting_peers_are_skipped():
+    """A half-open socket that stopped pinging is treated as dead.
+
+    Orphaned bridge connections kept their socket open (ws.closed False) while
+    nobody read it, stealing pairings forever.  Silence is the liveness signal.
+    """
+    import time
+    import types
+
+    from server.signaling_server import Peer, SessionManager
+
+    manager = SessionManager(tech_token=TECH_TOKEN, ice_servers=[],
+                             support_code="1234")
+    silent = Peer(ws=types.SimpleNamespace(closed=False), role="technician",
+                  code="1234", session_id="silent000000")
+    silent.last_seen = time.monotonic() - 3600  # an hour without a ping
+    await manager.join(silent)
+
+    live_customer = Peer(ws=types.SimpleNamespace(closed=False), role="customer",
+                         code="1234", session_id="livecust0000")
+    assert await manager.join(live_customer) is None, "paired with a silent zombie"
+    assert manager.stats()["waiting_technicians"] == 0, "silent zombie stayed queued"
+
+
 async def test_support_code_is_1234(signaling_server):
     """The alpha support code 1234 works like any normal code."""
     session, ws = await ws_connect(signaling_server.ws_url)

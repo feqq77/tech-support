@@ -19,9 +19,11 @@ Exact screen flow (nothing else on screen):
 2. **`confirm code`** + a simple input for the support code (the code is `1234`)
 3. after the correct code: **`GETTING READY`** (connection setup runs in the
    background; the app never claims a technician is connected before one is)
-4. when a technician actually requests access: a clear consent screen —
-   approve *screen viewing* and *mouse/keyboard control* separately
-5. session screen: visible sharing status and a large **`end`** button
+4. when a technician actually requests access: **`a technician is coming`** /
+   **`are you sure about this?`** with a **`yes`** / **`no`** choice — nothing
+   starts before `yes`
+5. session screen: **`connected. the technician is working. give us a moment.`**
+   and a large **`end`** button
 
 The customer can end the session at any time; ending stops capture and input
 immediately.
@@ -33,7 +35,7 @@ this local console is never exposed to the network). It shows:
 
 * whether a customer is connected (live status pill)
 * the customer's real selected X11 desktop, updating in real time
-* what the customer currently allows (view / control badges)
+* the consent the customer granted (view / control badges)
 * mouse, click, scroll and keyboard control of the remote desktop
 * an **End session** button that cuts remote access immediately
 
@@ -77,9 +79,8 @@ operator's PC — no VPS needed) and for the always-on VPS + TURN alternative.
 2. **Them (customer):** they run the install command; the app opens, they
    click `tech check`, type `1234`, click `GETTING READY`.
 3. The matchmaker pairs you two automatically (first come, first served;
-   extra customers queue). Their **consent screen** appears — they tick what
-   they allow (viewing, and control if they want you to drive the mouse and
-   keyboard).
+   extra customers queue). Their **consent screen** appears and they answer
+   **`yes`** (that grants viewing and control so you can work on the machine).
 4. Their desktop shows up live in your Chrome. **End session** on either
    side cuts it off immediately.
 
@@ -163,8 +164,9 @@ customer computer                        technician computer
 
 ## Security & customer trust
 
-* Nothing is captured or controlled until the customer explicitly allows it;
-  viewing and control are separate permissions, visible at all times.
+* Nothing is captured or controlled until the customer explicitly answers
+  `yes` on the consent screen; the granted permissions stay visible to the
+  technician at all times.
 * Either side can end the session instantly; ending stops capture and input
   immediately on the customer machine.
 * Technician access requires a technician token (constant-time checked) —
@@ -184,7 +186,7 @@ customer computer                        technician computer
 app/            customer application (UI, capture, input, WebRTC session)
 technician/     technician console server + web UI (Chrome)
 server/         signaling server + deployment templates (nginx, coturn, systemd)
-tests/          53 automated tests incl. real-Chrome end-to-end (docs/TESTING.md)
+tests/          56 automated tests incl. real-Chrome end-to-end (docs/TESTING.md)
 docs/           deployment, build and testing documentation
 get.sh          one-line customer installer (curl | bash, installs + auto-launches)
 install.sh      dependency bootstrap installer (source tree)

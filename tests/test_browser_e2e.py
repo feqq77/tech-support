@@ -207,3 +207,60 @@ async def test_full_session_in_real_chrome(xvfb_display, signaling_server, tmp_p
         await chrome.close()
         pump.close()
         close_win()
+
+
+async def test_second_connect_does_not_loop(signaling_server):
+    """Clicking connect again must not start a reconnect storm.
+
+    Regression: connectSignaling() used to close the live socket, and the close
+    event scheduled another reconnect 3 s later — which closed the *new*
+    socket, and so on forever.  The technician session then reset every 3 s and
+    could never pair with a customer.
+    """
+    tech_srv = TechnicianServerThread(signaling_server.ws_url).start()
+    chrome = Chrome(headless=True)
+    await chrome.launch()
+    try:
+        await chrome.navigate(tech_srv.base_url)
+        assert await _page_ready(chrome)
+
+        # count every WebSocket the page creates from here on
+        await chrome.evaluate(
+            "(() => { window.__wsCreated = 0;"
+            " const Orig = window.WebSocket;"
+            " const W = function (...a) { window.__wsCreated++; return new Orig(...a); };"
+            " W.prototype = Orig.prototype;"
+            " ['CONNECTING', 'OPEN', 'CLOSING', 'CLOSED'].forEach("
+            "   (k) => { W[k] = Orig[k]; });"
+            " window.WebSocket = W; })()"
+        )
+        await chrome.evaluate(
+            "(() => { const i = document.getElementById('code-input');"
+            " i.value = '1234'; })()"
+        )
+        await chrome.click("#connect-btn")
+
+        async def status_now():
+            return await chrome.evaluate(
+                "document.getElementById('status').textContent"
+            )
+
+        deadline = time.time() + 15
+        while time.time() < deadline:
+            if await status_now() == "waiting for customer…":
+                break
+            await asyncio.sleep(0.3)
+        else:
+            pytest.fail(f"console never waited for a customer (status={await status_now()!r})")
+
+        # a second click reconnects exactly once (the technician clicks twice)
+        await chrome.click("#connect-btn")
+        await asyncio.sleep(8)  # the old loop tore the link down every 3 s
+
+        created = await chrome.evaluate("window.__wsCreated")
+        assert created <= 2, f"console opened {created} websockets in 8 s — reconnect storm"
+        assert await status_now() == "waiting for customer…", (
+            f"console did not settle after the second connect (status={await status_now()!r})"
+        )
+    finally:
+        await chrome.close()

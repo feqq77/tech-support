@@ -14,7 +14,7 @@ by the fixtures themselves):
 .venv/bin/python -m pytest --no-header -q
 ```
 
-**Result: 53/53 passing** (verified with three consecutive full-suite runs plus
+**Result: 56/56 passing** (verified with three consecutive full-suite runs plus
 repeated capture+input runs after a race fix, see §1.2).
 
 | File | Tests | What it proves |
@@ -23,12 +23,12 @@ repeated capture+input runs after a race fix, see §1.2).
 | `tests/test_coords.py` | 5 | Normalized (0..1) → root-window pixel mapping incl. window offsets and video-resize scaling |
 | `tests/test_capture.py` | 5 | Real pixel capture from the selected display (XShm path); captured frames contain the drawn pattern, not a black frame |
 | `tests/test_input.py` | 7 | XTEST pointer motion, button clicks, scroll (wheel 4/5), key presses (incl. Shift) verified against **real X events** delivered to a mapped window |
-| `tests/test_signaling.py` | 8 | Pairing by code, signal relay, technician-token auth (constant-time compare), fixed support code `1234` accepted, wrong code rejected with a real message, `--code` override, no leak between concurrent sessions, keepalive pong reports the pairing state |
+| `tests/test_signaling.py` | 10 | Pairing by code, signal relay, technician-token auth (constant-time compare), fixed support code `1234` accepted, wrong code rejected with a real message, `--code` override, no leak between concurrent sessions, keepalive pong reports the pairing state, dead and silent waiting peers are never handed out (zombie-queue regressions) |
 | `tests/test_e2e.py` | 5 | Full aiortc WebRTC session: consent flow, real video frames, control messages injected as X input, deny-paths (view denied → no video, control denied → no input), unreachable signaling → real error text, lost `peer-joined` notification self-heals via the keepalive pong |
 | `tests/test_technician_server.py` | 6 | Console server binds `127.0.0.1` only, WS proxy relays both directions, injects the tech token server-side, reports unreachable signaling |
 | `tests/test_install_scripts.py` | 7 | `get.sh` (the one-line installer) run for real against a local fake release server: download + checksum verify, auto-launch (verified by the app actually starting), `--no-launch`, launch-failure reporting, latest-release lookup, bad-checksum rejection, missing-release error text, non-x86_64 source fallback |
 | `tests/test_ui.py` | 2 | Customer UI shows exactly the required labels on the required screens |
-| `tests/test_browser_e2e.py` | 1 | End-to-end in **real Google Chrome** via CDP: console loads, pairs, receives live WebRTC video of the customer's X display, End session tears everything down |
+| `tests/test_browser_e2e.py` | 2 | End-to-end in **real Google Chrome** via CDP: console loads, pairs, receives live WebRTC video of the customer's X display, End session tears everything down; second Connect click must not start a reconnect storm (regression) |
 
 ### 1.1 Real-Chrome browser test
 
@@ -52,6 +52,37 @@ actually the top-level window under the pointer**; the assertion messages
 include the offending window id and any event-pump error. After the fix: 5×
 capture+input runs and 3× consecutive full suites with no failures.
 
+### 1.3 Live-test findings (2026-10-18)
+
+A real single-machine trial ("I tested this on my own and it didn't work")
+was diagnosed from the live service journals. Three separate defects were
+found and fixed, each with a regression test:
+
+1. **Console reconnect storm.** Clicking **Connect** while a connection
+   existed closed the live socket; its close event scheduled a reconnect
+   3 s later, which closed the *new* socket — a perpetual 3 s loop that reset
+   the technician session forever. Fixed by detaching handlers on intentional
+   closes and ignoring events from superseded sockets
+   (`test_second_connect_does_not_loop`).
+2. **Zombie queue.** Sessions whose bridge died without a clean disconnect
+   stayed in the waiting queue and were handed out as partners, wedging the
+   joiner (nothing would ever reach the real technician). Fixed by skipping
+   peers whose socket is closed **or who have been silent longer than 90 s**
+   (half-open sockets never flip `ws.closed`; real clients ping every 20 s):
+   `test_dead_waiting_peers_are_skipped`, `test_silent_waiting_peers_are_skipped`.
+   The bridge also always closes its upstream socket now (previously skipped
+   when the `leave` send failed).
+3. **Silent bridge failure.** An unreachable signaling server was reported to
+   the browser but never logged, hiding the cause. It logs now; the console
+   server also rate-limits runaway reconnects so a stuck page cannot flood the
+   matchmaker.
+
+Verified afterwards against the real deployment (systemd console service on
+`127.0.0.1:8765`, matchmaker behind Tailscale Funnel, real Chrome): a
+technician connection stays up (1 websocket in 12 s where the bug opened one
+every 3 s) and a customer probing the queue is never paired with the dead
+sessions.
+
 ## 2. Customer UI verification
 
 `app/customer_app.py --self-test-ui` walks every screen and screenshots were
@@ -61,8 +92,10 @@ reviewed side by side with the spec (`tests/artifacts/customer-*.png`):
 - `customer-2-confirm-code.png` — exactly `confirm code`
 - `customer-2b-wrong-code.png` — wrong-code feedback path
 - `customer-3-getting-ready.png` — exactly `GETTING READY`
-- `customer-4-consent.png` — separate consent for **view** and for **control**
-- `customer-5-session.png` — visible sharing status + `end` button
+- `customer-4-consent.png` — consent: `a technician is coming` /
+  `are you sure about this?` with `yes` / `no`
+- `customer-5-session.png` — `connected. the technician is working. give us a
+  moment.` + `end` button
 
 Nothing else appears on the `tech check`, `confirm code`, or `GETTING READY`
 screens.
@@ -90,7 +123,9 @@ i.e. the whole stack over a genuine TCP network path, not loopback shortcuts:
 1. `demo-01..03` — customer home → `confirm code` (`1234`) → `GETTING READY`
 2. `demo-04` — console connected, waiting for customer approval
 3. `demo-05` — consent screen; the real consent buttons were clicked
-4. `demo-06` — customer session screen: `sharing screen · control allowed`
+4. `demo-06` — customer session screen (read `sharing screen · control allowed`
+   at the time of the demo; now `connected. the technician is working. give us a
+   moment.`)
 5. `demo-07` — console showing the **live remote desktop** (WebRTC video of the
    customer's X session, verified visually frame-by-frame)
 6. `demo-08..09` — End session: customer returned to home, console showed

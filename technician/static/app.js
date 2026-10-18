@@ -53,26 +53,39 @@ function sendInput(msg) {
 /* ------------------------------------------------------------- signaling */
 
 function connectSignaling(code) {
-  if (ws) try { ws.close(); } catch (_) {}
+  if (ws) {
+    // Intentional reconnect: detach the old handlers first.  Otherwise its
+    // close event schedules another reconnect, which tears down the *new*
+    // link three seconds later — and so on forever.
+    const old = ws;
+    ws = null;
+    old.onclose = null;
+    old.onmessage = null;
+    old.onerror = null;
+    try { old.close(); } catch (_) {}
+  }
   setStatus("connecting…", "pill-wait");
-  ws = new WebSocket(`ws://${location.host}/ws`);
-  ws.onopen = () => {
+  const sock = new WebSocket(`ws://${location.host}/ws`);
+  ws = sock;
+  sock.onopen = () => {
     log("connected to local console server");
     // The console server injects the technician token; the browser never sees it.
     send({ type: "hello", role: "technician", code: code });
   };
-  ws.onmessage = (ev) => {
+  sock.onmessage = (ev) => {
     let msg;
     try { msg = JSON.parse(ev.data); } catch (_) { return; }
     handleSignal(msg);
   };
-  ws.onclose = () => {
+  sock.onclose = () => {
+    if (ws !== sock) return;  // superseded by a newer connection
+    ws = null;
     if (state !== "pill-off") {
       setStatus("console link lost — retrying…", "pill-err");
-      setTimeout(() => { if (currentCode) connectSignaling(currentCode); }, 3000);
+      setTimeout(() => { if (currentCode && ws === null) connectSignaling(currentCode); }, 3000);
     }
   };
-  ws.onerror = () => log("console link error");
+  sock.onerror = () => log("console link error");
 }
 
 async function handleSignal(msg) {
