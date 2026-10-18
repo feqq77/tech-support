@@ -1,0 +1,14 @@
+[Unit]
+Description=Tech-support technician console (http://127.0.0.1:8765)
+After=network-online.target tech-support-signaling.service
+
+[Service]
+# Install to ~/.config/systemd/user/tech-support-console.service
+# (a *user* service: no root needed; it runs while you are logged in).
+WorkingDirectory=/media/fequla/NVMe Storage/teh
+ExecStart="/media/fequla/NVMe Storage/teh/run-technician.sh"
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
