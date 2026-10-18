@@ -175,6 +175,10 @@ function ensurePeer() {
 }
 
 async function onOffer(payload) {
+  // Always answer on a fresh peer connection: reusing a pc from a previous
+  // session turns the exchange into an ICE restart where both ends can end up
+  // controlling, and the customer's answer then fails to apply.
+  teardownPeer();
   ensurePeer();
   await pc.setRemoteDescription({ type: "offer", sdp: payload.sdp });
   const answer = await pc.createAnswer();

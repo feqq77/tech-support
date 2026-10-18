@@ -180,6 +180,7 @@ class CustomerSession:
         self._consent_view = False
         self._consent_control = False
         self._connected = False
+        self._webrtc_rebuilt = False
         self._close_reason = "session ended"
         self._ending = False
         self._main_task: Optional[asyncio.Task] = None
@@ -342,6 +343,37 @@ class CustomerSession:
                 await pc.addIceCandidate(ice)
         except Exception as exc:
             log.warning("failed to apply %s: %s", kind, exc)
+            if kind == protocol.SIGNAL_ANSWER and not self._webrtc_rebuilt:
+                self._webrtc_rebuilt = True
+                log.warning("restarting the connection to the technician")
+                asyncio.create_task(self._rebuild_webrtc())
+
+    async def _rebuild_webrtc(self) -> None:
+        """Rebuild the peer connection and offer again.
+
+        Runs once per session if the technician's answer cannot be applied
+        (for example a role conflict mid-flight): a full rebuild always
+        converges because a fresh exchange on both sides cannot conflict.
+        """
+        pc, self._pc = self._pc, None
+        try:
+            if pc is not None:
+                await pc.close()
+        except Exception:
+            pass
+        try:
+            if self._capturer is not None:
+                self._capturer.stop()
+        except Exception:
+            pass
+        self._capturer = None
+        self._track = None
+        self._input = None
+        try:
+            await self._start_webrtc()
+        except Exception as exc:
+            log.exception("failed to restart WebRTC session")
+            await self.end_session(f"failed to start session: {exc}", failed=True)
 
     # --------------------------------------------------------------- consent
 
@@ -432,6 +464,16 @@ class CustomerSession:
 
         offer = await pc.createOffer()
         await pc.setLocalDescription(offer)
+        # The technician's browser is the ICE controlling agent: it nominates
+        # the pair. Sending USE-CANDIDATE from here makes some browser stacks
+        # reject the check ("use-candidate attribute should not be present"),
+        # which made applying the answer throw and killed every session at the
+        # watchdog. Being controlled never sends that flag.
+        for transport in getattr(pc, "_RTCPeerConnection__iceTransports", None) or []:
+            conn = getattr(transport, "_connection", None)
+            if conn is not None:
+                conn.ice_controlling = False
+            transport._role_set = True
         await self._signaling.send_signal(
             protocol.SIGNAL_OFFER,
             {"type": "offer", "sdp": pc.localDescription.sdp},
