@@ -373,7 +373,9 @@ class CustomerSession:
             await self._start_webrtc()
         except Exception as exc:
             log.exception("failed to restart WebRTC session")
-            await self.end_session(f"failed to start session: {exc}", failed=True)
+            await self.end_session(
+                f"failed to start session: {type(exc).__name__}: {exc}", failed=True
+            )
 
     # --------------------------------------------------------------- consent
 
@@ -395,7 +397,9 @@ class CustomerSession:
             await self._start_webrtc()
         except Exception as exc:
             log.exception("failed to start WebRTC session")
-            await self.end_session(f"failed to start session: {exc}", failed=True)
+            await self.end_session(
+                f"failed to start session: {type(exc).__name__}: {exc}", failed=True
+            )
 
     async def _start_webrtc(self) -> None:
         from aiortc import RTCConfiguration, RTCPeerConnection
