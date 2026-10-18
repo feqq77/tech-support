@@ -425,6 +425,10 @@ class CustomerSession:
         with trace.stage("load WebRTC libraries", "import the WebRTC engine (aiortc)"):
             from aiortc import RTCConfiguration, RTCPeerConnection
 
+            from .iceshim import install as install_ice_shim
+
+            install_ice_shim()
+
         cfg = self.config
         self._set_state(CustomerState.CONNECTING_SESSION, "connecting to technician")
 

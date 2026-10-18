@@ -186,6 +186,27 @@ def probe_environment() -> list[Probe]:
     add("net.socket_udp", _udp)
     add("net.socket_unix", lambda: socket.socket(socket.AF_UNIX, socket.SOCK_STREAM).close() or "created")
 
+    def _netlink() -> str:
+        sock = socket.socket(socket.AF_NETLINK, socket.SOCK_DGRAM, 0)  # NETLINK_ROUTE
+        sock.close()
+        return "created"
+
+    add("net.netlink_socket", _netlink)
+
+    def _ifaddr() -> str:
+        import ifaddr
+
+        return f"{len(list(ifaddr.get_adapters()))} adapters"
+
+    add("net.ifaddr_enumeration", _ifaddr)
+
+    def _host_addresses() -> str:
+        from .iceshim import _get_host_addresses
+
+        return ", ".join(_get_host_addresses(True, True)) or "(none)"
+
+    add("net.ice_host_addresses", _host_addresses)
+
     # ---- the graphical session
     add("x11.display", lambda: os.environ.get("DISPLAY", "(unset)"), info=True)
     add("x11.session_type", lambda: os.environ.get("XDG_SESSION_TYPE", "(unset)"), info=True)
@@ -255,6 +276,14 @@ def _interpret(probes: list[Probe], exc: BaseException | None) -> list[str]:
         notes.append(
             "UDP sockets cannot be created, so the WebRTC media connection is "
             "impossible on this device in its current sandbox/permissions."
+        )
+    if failed("net.netlink_socket") or failed("net.ifaddr_enumeration"):
+        notes.append(
+            "The OS blocks network-interface enumeration (netlink/getifaddrs "
+            "-> EPERM). This is the sandbox denial that stopped candidate "
+            "gathering. The app now falls back to address sources that need "
+            "no netlink; if gathering still fails, the sandbox must allow "
+            "netlink or at least outbound UDP sockets."
         )
     if failed("x11.verify_display"):
         notes.append(
