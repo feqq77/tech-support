@@ -1,0 +1,16 @@
+[Unit]
+Description=Tech-support matchmaker (signaling server on 127.0.0.1:8787)
+After=network-online.target
+
+[Service]
+# Install to ~/.config/systemd/user/tech-support-signaling.service
+# (a *user* service: no root needed; it runs while you are logged in).
+# The server reads config.env in the project directory for its technician
+# token and support code.
+WorkingDirectory=/media/fequla/NVMe Storage/teh
+ExecStart="/media/fequla/NVMe Storage/teh/run-signaling-server.sh"
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

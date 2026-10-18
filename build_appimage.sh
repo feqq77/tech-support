@@ -15,6 +15,11 @@
 #
 # Usage:
 #   ./build_appimage.sh [--self-test]
+#
+# Optional build-time configuration:
+#   TECH_SUPPORT_SIGNALING_URL=wss://matchmaker.example/ws ./build_appimage.sh
+#   bakes that URL into the bundle as the default matchmaker address (the
+#   SIGNALING_URL environment variable still overrides it at run time).
 
 set -euo pipefail
 
@@ -160,12 +165,13 @@ Categories=Network;Utility;
 Terminal=false
 EOF
 
-cat > "$APPDIR/AppRun" <<'EOF'
+cat > "$APPDIR/AppRun" <<EOF
 #!/bin/sh
-HERE="$(dirname "$(readlink -f "$0")")"
-export PYTHONPATH="$HERE/usr/lib/app-packages:$HERE/app${PYTHONPATH:+:$PYTHONPATH}"
+HERE="\$(dirname "\$(readlink -f "\$0")")"
+export PYTHONPATH="\$HERE/usr/lib/app-packages:\$HERE/app\${PYTHONPATH:+:\$PYTHONPATH}"
 export PYTHONNOUSERSITE=1
-exec "$HERE/usr/bin/python3" -m app.customer_app "$@"
+export SIGNALING_URL="\${SIGNALING_URL:-${TECH_SUPPORT_SIGNALING_URL:-ws://127.0.0.1:8787/ws}}"
+exec "\$HERE/usr/bin/python3" -m app.customer_app "\$@"
 EOF
 chmod +x "$APPDIR/AppRun"
 

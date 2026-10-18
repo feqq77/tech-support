@@ -35,6 +35,7 @@ from typing import Optional
 from aiohttp import WSMsgType, web
 
 from app import protocol
+from app import config
 
 log = logging.getLogger("support.signaling-server")
 
@@ -274,13 +275,16 @@ def main() -> None:
     parser.add_argument("--host", default=os.environ.get("SIGNALING_HOST", "127.0.0.1"))
     parser.add_argument("--port", type=int,
                         default=int(os.environ.get("SIGNALING_PORT", "8787")))
-    parser.add_argument("--tech-token", default=os.environ.get("SUPPORT_TECH_TOKEN", ""))
+    # Falls back to the project config.env like the apps do
+    # (precedence: environment variables > config.env > defaults).
+    cfg = config.load_config()
+    parser.add_argument("--tech-token", default=cfg.tech_token)
     parser.add_argument("--ice-servers",
-                        default=os.environ.get("ICE_SERVERS_JSON", ""),
+                        default=cfg.ice_servers_json,
                         help='JSON list, e.g. [{"urls":"turn:turn.example.com:3478",'
                              '"username":"u","credential":"p"}]')
-    parser.add_argument("--code", default=os.environ.get("SUPPORT_CODE",
-                                                        protocol.DEFAULT_SUPPORT_CODE),
+    parser.add_argument("--code", default=cfg.support_code or
+                        protocol.DEFAULT_SUPPORT_CODE,
                         help="the support code customers and technicians type "
                              "(default: 1234)")
     parser.add_argument("--verbose", action="store_true")

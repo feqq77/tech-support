@@ -31,6 +31,17 @@ What the build does:
 
 Build-time requirements: `curl`, `tar`, internet access, ~600 MB free disk.
 
+To bake the project's matchmaker URL into the bundle (so customers never
+configure anything), set `TECH_SUPPORT_SIGNALING_URL` at build time:
+
+```bash
+TECH_SUPPORT_SIGNALING_URL=wss://matchmaker.example/ws ./build_appimage.sh --self-test
+```
+
+The value becomes the app's default `SIGNALING_URL`; a `SIGNALING_URL` in the
+customer's environment still overrides it. This project's releases are built
+with the live matchmaker URL described in [docs/DEPLOY.md](DEPLOY.md) § 0.
+
 ## Publish a release
 
 1. The GitHub repository is `feqq77/tech-support`, and `get.sh` already

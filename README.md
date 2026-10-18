@@ -61,19 +61,31 @@ Xvfb :106 -screen 0 1280x800x24 -listen tcp &
 ## Two separate computers (real internet use)
 
 `127.0.0.1` addresses only work on the machine that runs them. For customer
-and technician on different machines you deploy the two small shared
-services and point both sides at them:
+and technician on different machines, both sides point at one shared
+**matchmaker** (the signaling server). The published customer install command
+above already contains this project's live matchmaker URL (baked into the
+release), and the technician console reads the same URL from `config.env` —
+see [docs/DEPLOY.md](docs/DEPLOY.md) for how it runs (Tailscale Funnel on the
+operator's PC — no VPS needed) and for the always-on VPS + TURN alternative.
 
-1. deploy the **signaling server** (WebSocket over TLS) — exact steps in
-   [docs/DEPLOY.md](docs/DEPLOY.md)
-2. deploy a **TURN relay** (coturn) for networks that block direct
-   peer-to-peer — same document
-3. customer: `./run-customer.sh --signaling-url wss://support.example.com/ws`
-4. technician: `./run-technician.sh --signaling-url wss://support.example.com/ws`
+### A support session, step by step
+
+1. **You (technician):** make sure the matchmaker is up on your PC
+   (`systemctl --user status tech-support-signaling`), run
+   `./run-technician.sh`, open http://127.0.0.1:8765, type `1234` and click
+   **Connect** — the status pill shows you are waiting.
+2. **Them (customer):** they run the install command; the app opens, they
+   click `tech check`, type `1234`, click `GETTING READY`.
+3. The matchmaker pairs you two automatically (first come, first served;
+   extra customers queue). Their **consent screen** appears — they tick what
+   they allow (viewing, and control if they want you to drive the mouse and
+   keyboard).
+4. Their desktop shows up live in your Chrome. **End session** on either
+   side cuts it off immediately.
 
 Screen video/audio and all input events then travel directly between the two
-computers over end-to-end encrypted WebRTC (DTLS-SRTP); the signaling server
-only introduces the two peers, and TURN (when needed) relays ciphertext it
+computers over end-to-end encrypted WebRTC (DTLS-SRTP); the matchmaker only
+introduces the two peers, and TURN (when needed) relays ciphertext it
 cannot read.
 
 ## Install

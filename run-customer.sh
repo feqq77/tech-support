@@ -1,12 +1,7 @@
-#!/usr/bin/env bash
-# Customer application launcher.
-# Usage: ./run-customer.sh [--display :0|:106|127.0.0.1:106] [--signaling-url URL] [...]
-set -euo pipefail
-PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
-if [ ! -x "$PROJECT_DIR/.venv/bin/python" ]; then
-  echo "The application is not installed yet. Run: $PROJECT_DIR/install.sh" >&2
-  exit 1
+#!/bin/sh
+# Remote Tech-Support launcher (created by get.sh).
+APP="/home/fequla/.local/share/tech-support/TechSupport-Customer-x86_64.AppImage"
+if [ -e /dev/fuse ] && { command -v fusermount >/dev/null 2>&1 || command -v fusermount3 >/dev/null 2>&1; }; then
+  exec "$APP" "$@"
 fi
-
-exec "$PROJECT_DIR/.venv/bin/python" -m app.customer_app "$@"
+exec "$APP" --appimage-extract-and-run "$@"

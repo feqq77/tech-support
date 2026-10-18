@@ -13,6 +13,55 @@ Everything below runs on one small VPS (1 vCPU, 1 GB RAM is enough) with a
 public DNS name, e.g. `support.example.com`. **Nothing here is invented:
 replace the example names with your real host.**
 
+## 0. Quick path: your own PC + Tailscale Funnel (no VPS, no domain)
+
+For a small community the matchmaker can run on **your own PC** and be
+published to the internet through
+[Tailscale Funnel](https://tailscale.com/kb/1223/funnel) — free, real TLS,
+no router or DNS setup. That is the deployment this project currently ships
+with:
+
+1. Install Tailscale on the PC and sign in: https://tailscale.com/download
+2. Publish the matchmaker (the CLI prints a one-time approval URL the first
+   time — open it while signed in to the **same Tailscale account as the
+   PC**, then re-run the command):
+
+   ```bash
+   tailscale funnel --bg http://127.0.0.1:8787
+   ```
+
+   The matchmaker is now reachable at `https://<machine>.<tailnet>.ts.net`
+   with valid TLS (its `/healthz` should answer from any network).
+3. Run the signaling server as a **user** service — copy
+   `server/deploy/tech-support-signaling.user.service` to
+   `~/.config/systemd/user/tech-support-signaling.service`, adjust the two
+   paths, then:
+
+   ```bash
+   systemctl --user enable --now tech-support-signaling
+   curl -s http://127.0.0.1:8787/healthz
+   ```
+
+   It listens on `127.0.0.1:8787` only (Tailscale proxies to it) and reads
+   `config.env` for the technician token and support code.
+4. Bake the matchmaker URL into the customer app so customers configure
+   nothing:
+
+   ```bash
+   TECH_SUPPORT_SIGNALING_URL=wss://<machine>.<tailnet>.ts.net/ws ./build_appimage.sh --self-test
+   ```
+
+Honest limitations of this quick path:
+
+* **your PC must be on** (and logged in) while you do support sessions
+* there is **no TURN relay**: direct WebRTC works for most home networks (the
+  matchmaker hands out STUN), but customers behind symmetric NAT / CGNAT
+  (some mobile hotspots, strict corporate networks) may see "no picture".
+  The VPS + coturn path below removes this limitation.
+* the technician console still runs only on your PC (`http://127.0.0.1:8765`)
+
+The rest of this document describes the robust path (always-on VPS + TURN).
+
 ## 1. Signaling server (WebSocket, behind TLS)
 
 ### 1.1 Install
