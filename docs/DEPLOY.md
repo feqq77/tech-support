@@ -54,10 +54,12 @@ with:
 Honest limitations of this quick path:
 
 * **your PC must be on** (and logged in) while you do support sessions
-* there is **no TURN relay**: direct WebRTC works for most home networks (the
-  matchmaker hands out STUN), but customers behind symmetric NAT / CGNAT
-  (some mobile hotspots, strict corporate networks) may see "no picture".
-  The VPS + coturn path below removes this limitation.
+* there is **no TURN relay unless you set one**: direct WebRTC works for most
+  home networks (the matchmaker hands out STUN), but customers behind
+  symmetric NAT / CGNAT (some mobile hotspots, strict corporate networks)
+  and customers whose network blocks peer-to-peer traffic need a relay. The
+  quick path can use a free public one — see `TECH_SUPPORT_TURN_URL` in the
+  TURN section below. The VPS + coturn path runs your own.
 * the technician console still runs only on your PC (`http://127.0.0.1:8765`)
 
 The rest of this document describes the robust path (always-on VPS + TURN).
@@ -137,6 +139,24 @@ the technician machine (`--signaling-url wss://support.example.com/ws`).
 Many home routers and mobile networks block direct peer-to-peer traffic. A
 TURN relay forwards the **already end-to-end encrypted** media; it cannot read
 it. Without TURN, sessions behind strict NATs will fail with a clear error.
+
+**Easiest:** point at any relay with long-term credentials (coturn's
+`static-auth-secret` scheme) and let the matchmaker mint the credentials.
+This also works with the free public `staticauth.openrelay.metered.ca`
+endpoint, so no server is needed at all:
+
+```ini
+Environment=TECH_SUPPORT_TURN_URL=turns:staticauth.openrelay.metered.ca:443?transport=tcp
+Environment=TECH_SUPPORT_TURN_SECRET=openrelayprojectsecret
+```
+
+(or the same two names in `config.env`). The matchmaker mints a fresh
+credential on every start and hands the **same relay** to both peers. The
+customer's failure report probes the relay from the customer's own network
+(`net.turn_relay`), so an unreachable relay is named with its exact error
+instead of being guessed at.
+
+**Own relay:** run coturn yourself:
 
 ```bash
 sudo apt-get install -y coturn

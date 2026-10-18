@@ -281,7 +281,13 @@ SUPPORT_CODE=1234
 SIGNALING_URL=ws://127.0.0.1:8787/ws
 # Optional ICE servers as JSON (add TURN for restrictive networks), e.g.
 # ICE_SERVERS_JSON=[{"urls":"stun:stun.l.google.com:19302"},{"urls":"turn:turn.example.com:3478","username":"shop","credential":"secret"}]
-ICE_SERVERS_JSON=[{"urls":"stun:stun.l.google.com:19302"}]
+# Quote the JSON: a shell sourcing this file would otherwise eat the quotes.
+# ICE_SERVERS_JSON='[{"urls":"stun:stun.l.google.com:19302"}]'
+# TURN relay for networks that block direct peer-to-peer traffic. Both sides
+# pick this up live from the matchmaker; credentials are minted from the secret
+# (coturn static-auth-secret scheme, valid 30 days per server start).
+TECH_SUPPORT_TURN_URL=turns:staticauth.openrelay.metered.ca:443?transport=tcp
+TECH_SUPPORT_TURN_SECRET=openrelayprojectsecret
 EOF
   chmod 600 "$CONFIG_FILE"
   ok "config.env created (random technician token, permissions 600)"

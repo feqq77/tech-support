@@ -4,6 +4,15 @@
 set -euo pipefail
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+if [ -f "$PROJECT_DIR/config.env" ]; then
+  # Export the project configuration (ICE/TURN relay settings, support code)
+  # so the server process can read it from the environment.
+  set -a
+  # shellcheck disable=SC1091
+  . "$PROJECT_DIR/config.env"
+  set +a
+fi
+
 if [ ! -x "$PROJECT_DIR/.venv/bin/python" ]; then
   echo "The application is not installed yet. Run: $PROJECT_DIR/install.sh" >&2
   exit 1
