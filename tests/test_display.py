@@ -90,3 +90,28 @@ def test_detect_display(monkeypatch, xvfb_display):
 def test_list_local_displays(xvfb_display):
     num = xvfb_display.split(":")[1]
     assert f":{num}" in list_local_displays()
+
+
+def test_socket_handshake_reads_the_real_screen_size(xvfb_display):
+    """The pure-Python X11 handshake works with no helper programs at all."""
+    from app.displayutil import _verify_with_socket, parse_display
+
+    info = _verify_with_socket(parse_display(xvfb_display), timeout=5)
+    assert info["width"] == 1280 and info["height"] == 800
+    assert info["depth"] == 24
+    assert info["method"] == "socket"
+
+
+def test_verify_survives_denied_helper_execution(xvfb_display, monkeypatch):
+    """execve-EPERM devices: verification must still work, no subprocess used."""
+    import app.displayutil as displayutil
+
+    def denied(*args, **kwargs):
+        raise OSError(1, "Operation not permitted")
+
+    monkeypatch.setattr(displayutil.shutil, "which", lambda _: None)
+    monkeypatch.setattr(displayutil.subprocess, "run", denied)
+
+    info = verify_display(xvfb_display)
+    assert info["width"] == 1280 and info["height"] == 800
+    assert info["method"] in ("xlib", "socket")

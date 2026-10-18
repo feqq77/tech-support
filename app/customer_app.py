@@ -26,6 +26,7 @@ from tkinter import font as tkfont
 from . import config as configmod
 from .customer import CustomerConfig, CustomerCallbacks, CustomerSession, CustomerState
 from .displayutil import DisplayError, verify_display
+from .version import APP_VERSION
 
 log = logging.getLogger("support.customer-app")
 
@@ -46,6 +47,7 @@ class CustomerApp(CustomerCallbacks):
         self.root = root
         self.args = args
         self.session: CustomerSession | None = None
+        self.last_error_report = ""
         self.expected_code = args.code
         self.code_var = tk.StringVar()
 
@@ -91,6 +93,9 @@ class CustomerApp(CustomerCallbacks):
         )
         btn.grid(row=0, column=0, sticky="")
         self.home_btn = btn
+        tk.Label(
+            f, text=f"v{APP_VERSION}", font=self.small, bg=BG, fg=MUTED
+        ).grid(row=1, column=0, sticky="s", pady=(0, 8))
 
     def _build_code(self) -> None:
         f = self._frame("code")
@@ -167,19 +172,40 @@ class CustomerApp(CustomerCallbacks):
 
     def _build_error(self) -> None:
         f = self._frame("error")
-        f.grid_rowconfigure(0, weight=1)
+        f.grid_rowconfigure(1, weight=1)
         f.grid_columnconfigure(0, weight=1)
-        inner = tk.Frame(f, bg=BG)
-        inner.grid(row=0, column=0)
+        top = tk.Frame(f, bg=BG)
+        top.grid(row=0, column=0, pady=(18, 0))
         self.error_label = tk.Label(
-            inner, text="", font=self.body, bg=BG, fg=DANGER, wraplength=440
+            top, text="", font=self.body, bg=BG, fg=DANGER, wraplength=520,
+            justify="left",
         )
-        self.error_label.pack(pady=(0, 18))
+        self.error_label.pack(pady=(0, 8))
+        self.error_report_label = tk.Label(
+            top, text="", font=self.small, bg=BG, fg=MUTED, wraplength=520,
+            justify="left",
+        )
+        self.error_report_label.pack(pady=(0, 12))
         tk.Button(
-            inner, text="try again", font=self.body, fg="#ffffff", bg=ACCENT,
+            top, text="try again", font=self.body, fg="#ffffff", bg=ACCENT,
             activebackground=ACCENT_HOVER, relief="flat", bd=0, padx=30, pady=9,
             cursor="hand2", command=self.on_retry,
         ).pack()
+        # The complete, exact diagnosis: every step, the traceback, and each
+        # capability checked one by one.  Never hidden - the customer can read
+        # it out or copy it to the technician as-is.
+        body = tk.Frame(f, bg=BG)
+        body.grid(row=1, column=0, sticky="nsew", padx=16, pady=(12, 14))
+        body.grid_rowconfigure(0, weight=1)
+        body.grid_columnconfigure(0, weight=1)
+        self.error_details = tk.Text(
+            body, font=("TkFixedFont", 9), bg="#14161a", fg="#d7dce4",
+            relief="flat", bd=0, wrap="none", state="disabled",
+        )
+        self.error_details.grid(row=0, column=0, sticky="nsew")
+        ys = tk.Scrollbar(body, command=self.error_details.yview)
+        ys.grid(row=0, column=1, sticky="ns")
+        self.error_details.configure(yscrollcommand=ys.set)
 
     def show(self, name: str) -> None:
         for frame in self._frames.values():
@@ -275,12 +301,28 @@ class CustomerApp(CustomerCallbacks):
             self._show_session_screen()
 
     def _ui_ended(self, reason: str) -> None:
+        self.last_error_report = (
+            getattr(self.session, "last_error_report", "") or self.last_error_report
+        )
         self.session = None
         self.show("home")
         log.info("session ended: %s", reason)
 
     def _ui_error(self, message: str) -> None:
+        report = self.last_error_report
         self.error_label.config(text=message)
+        self.error_details.configure(state="normal")
+        self.error_details.delete("1.0", "end")
+        if report:
+            self.error_report_label.config(
+                text="the full diagnosis is below - copy it to the technician "
+                "(also saved to ~/.local/share/tech-support/last-error.txt)"
+            )
+            self.error_details.insert("1.0", report)
+        else:
+            self.error_report_label.config(text="")
+        self.error_details.configure(state="disabled")
+        self.root.geometry("720x620")
         self.show("error")
 
     # ------------------------------------------------------------ factory
@@ -354,7 +396,10 @@ def run_self_test(root: tk.Tk, app: CustomerApp) -> int:
 
     root.update()
     check("home shows 'tech check' button", app.home_btn.cget("text") == "tech check")
-    check("home has no other buttons", len(app._frames["home"].winfo_children()) == 1)
+    home_buttons = [
+        w for w in app._frames["home"].winfo_children() if isinstance(w, tk.Button)
+    ]
+    check("home has no other buttons", len(home_buttons) == 1)
 
     app.on_tech_check()
     root.update()

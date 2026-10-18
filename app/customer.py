@@ -183,6 +183,8 @@ class CustomerSession:
         self._webrtc_rebuilt = False
         self._close_reason = "session ended"
         self._ending = False
+        self.last_error_report = ""
+        self._trace = None
         self._main_task: Optional[asyncio.Task] = None
 
     # ---------------------------------------------------------------- control
@@ -373,6 +375,7 @@ class CustomerSession:
             await self._start_webrtc()
         except Exception as exc:
             log.exception("failed to restart WebRTC session")
+            self._record_failure(exc, "rebuilding the session after a lost answer")
             await self.end_session(
                 f"failed to start session: {type(exc).__name__}: {exc}", failed=True
             )
@@ -397,24 +400,49 @@ class CustomerSession:
             await self._start_webrtc()
         except Exception as exc:
             log.exception("failed to start WebRTC session")
+            self._record_failure(exc, "starting the session after consent")
             await self.end_session(
                 f"failed to start session: {type(exc).__name__}: {exc}", failed=True
             )
 
+    def _record_failure(self, exc: BaseException, context: str) -> None:
+        """Build the full failure report: shown in the UI and saved to disk."""
+        from . import diagnostics
+
+        try:
+            self.last_error_report = diagnostics.build_report(
+                exc, getattr(self, "_trace", None), context=context
+            )
+            path = diagnostics.save_report(self.last_error_report)
+            log.error("session failure report written to %s", path)
+        except Exception:
+            log.exception("could not build the session failure report")
+
     async def _start_webrtc(self) -> None:
-        from aiortc import RTCConfiguration, RTCPeerConnection
+        from .diagnostics import StageTrace
+
+        self._trace = trace = StageTrace()
+        with trace.stage("load WebRTC libraries", "import the WebRTC engine (aiortc)"):
+            from aiortc import RTCConfiguration, RTCPeerConnection
 
         cfg = self.config
         self._set_state(CustomerState.CONNECTING_SESSION, "connecting to technician")
 
         if self._consent_control:
-            self._input = InputController(cfg.display)
+            with trace.stage(
+                "open input control (mouse + keyboard)",
+                "connect to this X session so the technician can move and type",
+            ):
+                self._input = InputController(cfg.display)
 
-        self._pc = pc = RTCPeerConnection(
-            configuration=RTCConfiguration(
-                iceServers=to_rtc_ice_servers(self._ice_servers)
+        with trace.stage(
+            "create the WebRTC peer connection", "set up ICE, DTLS and SCTP"
+        ):
+            self._pc = pc = RTCPeerConnection(
+                configuration=RTCConfiguration(
+                    iceServers=to_rtc_ice_servers(self._ice_servers)
+                )
             )
-        )
 
         @pc.on("connectionstatechange")
         async def on_state_change() -> None:
@@ -444,12 +472,28 @@ class CustomerSession:
             self._capturer = ScreenCapturer(
                 cfg.display, fps=cfg.fps, backend=cfg.capture_backend
             )
-            self._capturer.prepare()
-            self._capturer.start()
-            self._track = ScreenVideoTrack.create(self._capturer, cfg.fps, cfg.max_width)
-            pc.addTrack(self._track)
+            with trace.stage(
+                "verify the screen to share",
+                "check the X display and choose a capture backend",
+            ):
+                self._capturer.prepare()
+            with trace.stage(
+                "start screen capture", "begin grabbing frames from the desktop"
+            ):
+                self._capturer.start()
+            with trace.stage(
+                "create the video track", "wrap the captured frames for WebRTC"
+            ):
+                self._track = ScreenVideoTrack.create(
+                    self._capturer, cfg.fps, cfg.max_width
+                )
+                pc.addTrack(self._track)
 
-        channel = pc.createDataChannel("input", ordered=True)
+        with trace.stage(
+            "open the input data channel",
+            "pick the SCTP port and open the channel the technician types into",
+        ):
+            channel = pc.createDataChannel("input", ordered=True)
 
         @channel.on("message")
         def on_input_message(message) -> None:
@@ -466,22 +510,32 @@ class CustomerSession:
             except Exception as exc:
                 log.warning("input event failed: %s", exc)
 
-        offer = await pc.createOffer()
-        await pc.setLocalDescription(offer)
-        # The technician's browser is the ICE controlling agent: it nominates
-        # the pair. Sending USE-CANDIDATE from here makes some browser stacks
-        # reject the check ("use-candidate attribute should not be present"),
-        # which made applying the answer throw and killed every session at the
-        # watchdog. Being controlled never sends that flag.
-        for transport in getattr(pc, "_RTCPeerConnection__iceTransports", None) or []:
-            conn = getattr(transport, "_connection", None)
-            if conn is not None:
-                conn.ice_controlling = False
-            transport._role_set = True
-        await self._signaling.send_signal(
-            protocol.SIGNAL_OFFER,
-            {"type": "offer", "sdp": pc.localDescription.sdp},
-        )
+        with trace.stage("create the offer", "build the SDP offer for the technician"):
+            offer = await pc.createOffer()
+        with trace.stage(
+            "gather connection candidates",
+            "set the local description; ICE collects the network candidates",
+        ):
+            await pc.setLocalDescription(offer)
+        with trace.stage(
+            "take the controlled ICE role",
+            "let the technician's browser nominate the network pair",
+        ):
+            # The technician's browser is the ICE controlling agent: it nominates
+            # the pair. Sending USE-CANDIDATE from here makes some browser stacks
+            # reject the check ("use-candidate attribute should not be present"),
+            # which made applying the answer throw and killed every session at the
+            # watchdog. Being controlled never sends that flag.
+            for transport in getattr(pc, "_RTCPeerConnection__iceTransports", None) or []:
+                conn = getattr(transport, "_connection", None)
+                if conn is not None:
+                    conn.ice_controlling = False
+                transport._role_set = True
+        with trace.stage("send the offer", "hand the offer to the technician"):
+            await self._signaling.send_signal(
+                protocol.SIGNAL_OFFER,
+                {"type": "offer", "sdp": pc.localDescription.sdp},
+            )
         # WebRTC establishment watchdog.
         asyncio.create_task(self._webrtc_watchdog(cfg.connect_timeout))
 

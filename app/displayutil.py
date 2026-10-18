@@ -158,25 +158,169 @@ def _verify_with_xlib(parsed: ParsedDisplay) -> dict:
             pass
 
 
+def _xauthority_entries() -> list:
+    """Parse ~/.Xauthority into (family, addr, num, name, data) records."""
+    path = os.environ.get("XAUTHORITY") or os.path.expanduser("~/.Xauthority")
+    try:
+        with open(path, "rb") as fh:
+            buf = fh.read()
+    except OSError:
+        return []
+    entries: list = []
+    pos = 0
+
+    def u16() -> int:
+        nonlocal pos
+        v = int.from_bytes(buf[pos : pos + 2], "big")
+        pos += 2
+        return v
+
+    def blob() -> bytes:
+        nonlocal pos
+        ln = u16()
+        v = buf[pos : pos + ln]
+        pos += ln
+        return v
+
+    try:
+        while pos + 2 <= len(buf):
+            family = u16()
+            entries.append((family, blob(), blob(), blob(), blob()))
+    except (IndexError, ValueError):
+        pass
+    return entries
+
+
+def _verify_with_socket(parsed: ParsedDisplay, timeout: float) -> dict:
+    """Verify a display with nothing but a socket and the X11 protocol.
+
+    No helper programs, no C extensions: works on devices where starting
+    helper programs is denied (execve -> EPERM) or where xdpyinfo is not
+    installed.  Performs the X11 connection setup handshake, including the
+    MIT-MAGIC-COOKIE from the X authority file, and reads the root window
+    size out of the setup reply.
+    """
+    import socket as _socket
+    import struct
+
+    if parsed.socket_path is not None:
+        if not os.path.exists(parsed.socket_path):
+            raise DisplayError(f"no X socket {parsed.socket_path} exists")
+        sock = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+        sock.settimeout(timeout)
+        try:
+            sock.connect(parsed.socket_path)
+        except OSError as exc:
+            raise DisplayError(
+                f"cannot connect to X socket {parsed.socket_path}: {exc}"
+            ) from exc
+    else:
+        sock = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+        sock.settimeout(timeout)
+        try:
+            sock.connect((parsed.host, 6000 + parsed.num))
+        except OSError as exc:
+            raise DisplayError(
+                f"cannot connect to {parsed.host}:{6000 + parsed.num}: {exc}"
+            ) from exc
+
+    def recv_exact(n: int) -> bytes:
+        data = b""
+        while len(data) < n:
+            chunk = sock.recv(n - len(data))
+            if not chunk:
+                raise DisplayError(f"X server closed the connection for {parsed.raw!r}")
+            data += chunk
+        return data
+
+    try:
+        name = b""
+        cookie = b""
+        want = str(parsed.num).encode()
+        for _family, _addr, num, entry_name, entry_data in _xauthority_entries():
+            if num in (want, b""):
+                name, cookie = entry_name, entry_data
+                break
+        request = struct.pack("<BBHHHHH", 0x6C, 0, 11, 0, len(name), len(cookie), 0)
+        request += name + b"\x00" * ((-len(name)) % 4)
+        request += cookie + b"\x00" * ((-len(cookie)) % 4)
+        sock.sendall(request)
+
+        head = recv_exact(8)
+        status = head[0]
+        length = int.from_bytes(head[6:8], "little")
+        if status != 1:
+            reason_len = head[1]
+            reason = recv_exact(length * 4)[:reason_len].decode("ascii", "replace")
+            raise DisplayError(
+                f"X server refused the connection for {parsed.raw!r}: "
+                f"{reason.strip() or 'authentication failed'}"
+            )
+
+        body = recv_exact(length * 4)
+        vendor_len = int.from_bytes(body[16:18], "little")
+        formats = body[21]
+        pos = 32 + ((vendor_len + 3) & ~3) + formats * 8
+        if pos + 40 > len(body):
+            raise DisplayError(f"X server sent a truncated setup reply for {parsed.raw!r}")
+        width = int.from_bytes(body[pos + 20 : pos + 22], "little")
+        height = int.from_bytes(body[pos + 22 : pos + 24], "little")
+        depth = body[pos + 38]
+        return {
+            "width": width,
+            "height": height,
+            "depth": depth,
+            "method": "socket",
+        }
+    finally:
+        try:
+            sock.close()
+        except OSError:
+            pass
+
+
 LOOPBACK_HOSTS = ("", "unix", "127.0.0.1", "localhost", "::1")
 
 
 def _probe(parsed: ParsedDisplay, timeout: float) -> dict:
+    """Try every available verification method; never dies on one failure.
+
+    Each method is tried in turn: xdpyinfo (helper program - may be missing or
+    its execution may be denied), python-xlib (C extension), then a pure
+    Python X11 handshake which needs nothing but a socket.  The first method
+    that returns a usable size wins; if none does, the errors of all of them
+    are reported together.
+    """
+    methods: list[tuple[str, callable]] = []
     if shutil.which("xdpyinfo"):
+        methods.append(("xdpyinfo", lambda: _verify_with_xdpyinfo(parsed, timeout)))
+    methods.append(("xlib", lambda: _verify_with_xlib(parsed)))
+    methods.append(("socket", lambda: _verify_with_socket(parsed, timeout)))
+
+    errors: list[str] = []
+    for method_name, fn in methods:
         try:
-            info = _verify_with_xdpyinfo(parsed, timeout)
-        except subprocess.TimeoutExpired as exc:
-            raise DisplayError(
-                f"display {parsed.raw!r} did not answer within {timeout:g}s "
-                "(xdpyinfo timed out)."
-            ) from exc
-    else:
-        info = _verify_with_xlib(parsed)
-    if not info.get("width") or not info.get("height"):
-        raise DisplayError(
-            f"display {parsed.raw!r} answered but did not report a usable size."
-        )
-    return info
+            info = fn()
+        except subprocess.TimeoutExpired:
+            errors.append(f"{method_name}: timed out after {timeout:g}s")
+            continue
+        except DisplayError as exc:
+            errors.append(f"{method_name}: {exc}")
+            continue
+        except OSError as exc:
+            # e.g. execve denied when starting the helper (EPERM)
+            errors.append(f"{method_name}: cannot run: {type(exc).__name__}: {exc}")
+            continue
+        except Exception as exc:
+            errors.append(f"{method_name}: {type(exc).__name__}: {exc}")
+            continue
+        if info.get("width") and info.get("height"):
+            return info
+        errors.append(f"{method_name}: answered but reported no usable size")
+    raise DisplayError(
+        f"display {parsed.raw!r} could not be verified - tried "
+        f"{len(methods)} methods: " + "; ".join(errors)
+    )
 
 
 def verify_display(raw: str, timeout: float = 5.0) -> dict:
