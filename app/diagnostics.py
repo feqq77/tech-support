@@ -17,6 +17,7 @@ shown in the customer app's error screen.
 
 from __future__ import annotations
 
+import asyncio
 import errno as _errno
 import os
 import platform
@@ -88,7 +89,88 @@ def _errno_text(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {exc}"
 
 
-def probe_environment() -> list[Probe]:
+def candidates_from_sdp(sdp: str) -> list[str]:
+    """Return the 'a=candidate:' lines of an SDP as readable strings."""
+    out: list[str] = []
+    for line in (sdp or "").splitlines():
+        line = line.strip()
+        if line.startswith("a=candidate:"):
+            out.append(line[len("a="):])
+    return out
+
+
+def _turn_entry(ice_servers) -> dict | None:
+    """Find the first TURN relay entry in a [{urls,username,credential}] list."""
+    for item in ice_servers or []:
+        urls = item.get("urls") if isinstance(item, dict) else item
+        if isinstance(urls, str):
+            urls = [urls]
+        for url in urls or []:
+            if isinstance(url, str) and url.startswith(("turn:", "turns:")):
+                entry = {"urls": url}
+                if isinstance(item, dict):
+                    entry["username"] = item.get("username")
+                    entry["credential"] = item.get("credential")
+                return entry
+    return None
+
+
+def _probe_turn_allocation(ice_servers) -> str:
+    """Allocate a relay on the configured TURN server.  Never raises."""
+    entry = _turn_entry(ice_servers)
+    if entry is None:
+        return "no TURN relay configured (direct peer-to-peer only)"
+    url = entry["urls"]
+    scheme, rest = url.split(":", 1)
+    rest = rest.split("?", 1)[0]
+    host, _, port_s = rest.rpartition(":")
+    if not host:
+        host, port_s = rest, ""
+    port = int(port_s) if port_s.isdigit() else (5349 if scheme == "turns" else 3478)
+    transport = "tcp" if scheme == "turns" else "udp"
+    if "transport=tcp" in url:
+        transport = "tcp"
+    username = entry.get("username")
+    credential = entry.get("credential")
+    if not username:
+        return f"{url}: anonymous allocation not attempted (no credentials)"
+
+    class _Sink(asyncio.DatagramProtocol):
+        def connection_made(self, transport_):  # noqa: ANN001
+            self.transport = transport_
+
+    async def _run():
+        from aioice import turn as aioice_turn
+
+        endpoint, _ = await asyncio.wait_for(
+            aioice_turn.create_turn_endpoint(
+                lambda: _Sink(),
+                (host, port),
+                username=username,
+                password=credential,
+                ssl=(scheme == "turns") or None,
+                transport=transport,
+            ),
+            timeout=10,
+        )
+        relay = endpoint.transport.get_extra_info("related_address")
+        endpoint.transport.close()
+        return relay
+
+    import concurrent.futures
+
+    try:
+        with concurrent.futures.ThreadPoolExecutor(1) as pool:
+            relay = pool.submit(lambda: asyncio.run(_run())).result(timeout=15)
+    except Exception as exc:
+        raise RuntimeError(
+            f"{url} as user {username!r}: allocation failed "
+            f"({type(exc).__name__}: {exc})"
+        ) from exc
+    return f"{url} -> relay address {relay} (server reachable, credentials valid)"
+
+
+def probe_environment(ice_servers=None) -> list[Probe]:
     """Probe everything session start depends on.  Never raises."""
     probes: list[Probe] = []
 
@@ -232,6 +314,10 @@ def probe_environment() -> list[Probe]:
 
     add("x11.verify_display", _x11_verify)
 
+    # ---- the TURN relay (only relevant once a session is trying to connect)
+    if ice_servers is not None:
+        add("net.turn_relay", lambda: _probe_turn_allocation(ice_servers))
+
     return probes
 
 
@@ -253,6 +339,31 @@ def _interpret(probes: list[Probe], exc: BaseException | None) -> list[str]:
     def failed(label: str) -> bool:
         p = by_label.get(label)
         return p is not None and p.status == FAIL
+
+    turn = by_label.get("net.turn_relay")
+    if isinstance(exc, TimeoutError):
+        notes.append(
+            "This is NOT a startup failure: every step above completed. The "
+            "peer-to-peer connection itself never came up. Read CONNECTION "
+            "STATE above: if the technician's answer was NEVER RECEIVED, the "
+            "signaling link dropped it; if both sides list candidates but no "
+            "pair connected, this network blocks peer-to-peer traffic (UDP or "
+            "all inbound) and a reachable TURN relay is required."
+        )
+    if turn is not None and turn.status == FAIL:
+        notes.append(
+            "The configured TURN relay could not allocate a relay address "
+            "(net.turn_relay probe line has the exact reason). Without a "
+            "working relay only direct peer-to-peer paths can connect, and "
+            "this network appears to block them. The relay is either "
+            "unreachable from here or rejected the credentials."
+        )
+    if turn is not None and turn.status == OK:
+        notes.append(
+            "The TURN relay IS reachable from this device, so the failure is "
+            "on the technician side or between the two: see which candidates "
+            "each side held in CONNECTION STATE above."
+        )
 
     if failed("entropy.kernel_urandom") or failed("entropy.kernel_getrandom"):
         notes.append(
@@ -304,9 +415,15 @@ def _interpret(probes: list[Probe], exc: BaseException | None) -> list[str]:
     return notes
 
 
-def build_report(exc: BaseException, trace: StageTrace | None = None, context: str = "") -> str:
+def build_report(
+    exc: BaseException,
+    trace: StageTrace | None = None,
+    context: str = "",
+    details: str = "",
+    ice_servers=None,
+) -> str:
     """Build the complete, self-contained failure report."""
-    probes = probe_environment()
+    probes = probe_environment(ice_servers=ice_servers)
     lines: list[str] = []
     lines.append("=" * 66)
     lines.append("TECH SUPPORT - SESSION START FAILURE REPORT")
@@ -342,6 +459,13 @@ def build_report(exc: BaseException, trace: StageTrace | None = None, context: s
             f"ERRNO          : {exc.errno} ({_errno.errorcode.get(exc.errno, '?')}) "
             f"- {os.strerror(exc.errno)}"
         )
+
+    if details:
+        lines.append("")
+        lines.append("CONNECTION STATE (measured just before giving up)")
+        for line in details.splitlines():
+            lines.append(f"  {line}" if line.strip() else "")
+
     lines.append("")
     lines.append("TRACEBACK")
     for line in traceback.format_exception(type(exc), exc, exc.__traceback__):

@@ -88,3 +88,70 @@ def test_report_is_saved_to_a_readable_file(tmp_path, monkeypatch):
     with open(path, encoding="utf-8") as fh:
         assert fh.read().strip() == "hello report"
     assert os.path.basename(path) == "last-error.txt"
+
+
+def test_candidates_from_sdp_extracts_candidate_lines():
+    sdp = (
+        "v=0\r\n"
+        "a=candidate:1 1 udp 2130706431 10.0.0.155 50000 typ host\r\n"
+        "a=candidate:2 1 udp 1694498815 24.128.177.172 50000 typ srflx\r\n"
+    )
+    cands = diagnostics.candidates_from_sdp(sdp)
+    assert len(cands) == 2
+    assert cands[0].startswith("candidate:1 1 udp")
+    assert "srflx" in cands[1]
+    assert diagnostics.candidates_from_sdp("") == []
+
+
+def test_turn_entry_picked_from_ice_servers():
+    entry = diagnostics._turn_entry(
+        [
+            {"urls": "stun:x"},
+            {"urls": "turn:t.example:3478", "username": "u", "credential": "p"},
+        ]
+    )
+    assert entry == {"urls": "turn:t.example:3478", "username": "u", "credential": "p"}
+    assert diagnostics._turn_entry([{"urls": "stun:x"}]) is None
+    assert diagnostics._turn_entry(None) is None
+
+
+def test_report_includes_connection_state_and_turn_probe():
+    exc = TimeoutError("could not establish a connection to the technician within 25s")
+    report = build_report(
+        exc,
+        _trace_with_failure(),
+        context="establishing the peer-to-peer connection",
+        details=(
+            "offer sent to technician : 25.0s ago\n"
+            "technician answer        : NEVER RECEIVED - no reply came back"
+        ),
+        ice_servers=[{"urls": "stun:stun.l.google.com:19302"}],
+    )
+    assert "CONNECTION STATE (measured just before giving up)" in report
+    assert "NEVER RECEIVED" in report
+    assert "net.turn_relay" in report
+    assert "no TURN relay configured" in report
+    flat = " ".join(report.split())
+    assert "peer-to-peer connection itself never came up" in flat
+
+
+def test_report_says_turn_relay_failure_when_allocation_fails(monkeypatch):
+    def boom(ice_servers):
+        raise RuntimeError(
+            "turns:relay.example:443 as user 'x': allocation failed (TimeoutError: timed out)"
+        )
+
+    monkeypatch.setattr(diagnostics, "_probe_turn_allocation", boom)
+    report = build_report(
+        TimeoutError("no connection"),
+        ice_servers=[
+            {
+                "urls": "turns:relay.example:443?transport=tcp",
+                "username": "x",
+                "credential": "y",
+            }
+        ],
+    )
+    assert "allocation failed" in report
+    flat = " ".join(report.split())
+    assert "TURN relay could not allocate a relay address" in flat

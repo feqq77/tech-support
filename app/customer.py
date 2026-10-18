@@ -181,6 +181,9 @@ class CustomerSession:
         self._consent_control = False
         self._connected = False
         self._webrtc_rebuilt = False
+        self._offer_sent_at: Optional[float] = None
+        self._answer_at: Optional[float] = None
+        self._remote_sdp = ""
         self._close_reason = "session ended"
         self._ending = False
         self.last_error_report = ""
@@ -329,9 +332,12 @@ class CustomerSession:
             if kind == protocol.SIGNAL_ANSWER:
                 from aiortc import RTCSessionDescription
 
+                sdp = payload.get("sdp", "")
                 await pc.setRemoteDescription(
-                    RTCSessionDescription(sdp=payload.get("sdp", ""), type="answer")
+                    RTCSessionDescription(sdp=sdp, type="answer")
                 )
+                self._answer_at = time.monotonic()
+                self._remote_sdp = sdp
             elif kind == protocol.SIGNAL_ICE:
                 cand = payload.get("candidate")
                 if not cand:
@@ -375,7 +381,11 @@ class CustomerSession:
             await self._start_webrtc()
         except Exception as exc:
             log.exception("failed to restart WebRTC session")
-            self._record_failure(exc, "rebuilding the session after a lost answer")
+            self._record_failure(
+                exc,
+                "rebuilding the session after a lost answer",
+                details=self._connection_diagnostics(),
+            )
             await self.end_session(
                 f"failed to start session: {type(exc).__name__}: {exc}", failed=True
             )
@@ -400,28 +410,98 @@ class CustomerSession:
             await self._start_webrtc()
         except Exception as exc:
             log.exception("failed to start WebRTC session")
-            self._record_failure(exc, "starting the session after consent")
+            self._record_failure(
+                exc,
+                "starting the session after consent",
+                details=self._connection_diagnostics(),
+            )
             await self.end_session(
                 f"failed to start session: {type(exc).__name__}: {exc}", failed=True
             )
 
-    def _record_failure(self, exc: BaseException, context: str) -> None:
+    def _record_failure(self, exc: BaseException, context: str, details: str = "") -> None:
         """Build the full failure report: shown in the UI and saved to disk."""
         from . import diagnostics
 
         try:
             self.last_error_report = diagnostics.build_report(
-                exc, getattr(self, "_trace", None), context=context
+                exc,
+                getattr(self, "_trace", None),
+                context=context,
+                details=details,
+                ice_servers=self._ice_servers,
             )
             path = diagnostics.save_report(self.last_error_report)
             log.error("session failure report written to %s", path)
         except Exception:
             log.exception("could not build the session failure report")
 
+    def _connection_diagnostics(self) -> str:
+        """Everything measured about the peer-to-peer connection attempt."""
+        from .diagnostics import candidates_from_sdp
+
+        now = time.monotonic()
+        lines: list[str] = []
+
+        def ago(at: Optional[float]) -> str:
+            return "never" if at is None else f"{now - at:.1f}s ago"
+
+        lines.append(f"offer sent to technician : {ago(self._offer_sent_at)}")
+        if self._answer_at is not None and self._offer_sent_at is not None:
+            lines.append(
+                "technician answer        : received "
+                f"{self._answer_at - self._offer_sent_at:.1f}s after the offer"
+            )
+        elif self._answer_at is not None:
+            lines.append("technician answer        : received")
+        else:
+            lines.append(
+                "technician answer        : NEVER RECEIVED - no reply came back "
+                "through the matchmaker"
+            )
+
+        pc = self._pc
+        if pc is None:
+            lines.append("peer connection          : absent (closed or not rebuilt)")
+        else:
+            for name in (
+                "signalingState",
+                "iceConnectionState",
+                "iceGatheringState",
+                "connectionState",
+            ):
+                lines.append(f"{name:<25}: {getattr(pc, name, 'unknown')}")
+            local_sdp = getattr(getattr(pc, "localDescription", None), "sdp", "") or ""
+            remote_sdp = (
+                self._remote_sdp
+                or getattr(getattr(pc, "remoteDescription", None), "sdp", "")
+                or ""
+            )
+            local = candidates_from_sdp(local_sdp)
+            remote = candidates_from_sdp(remote_sdp)
+            lines.append(f"local candidates ({len(local)}):")
+            lines.extend(f"   {c}" for c in local or ["(none gathered)"])
+            lines.append(f"remote candidates ({len(remote)}):")
+            lines.extend(f"   {c}" for c in remote or ["(none received)"])
+
+        if self._ice_servers:
+            for item in self._ice_servers:
+                urls = item.get("urls") if isinstance(item, dict) else item
+                auth = ""
+                if isinstance(item, dict) and item.get("username"):
+                    auth = " (credentials present)"
+                lines.append(f"ice server               : {urls}{auth}")
+        else:
+            lines.append("ice server               : none configured (STUN/TURN empty)")
+        return "\n".join(lines)
+
     async def _start_webrtc(self) -> None:
         from .diagnostics import StageTrace
 
         self._trace = trace = StageTrace()
+        self._offer_sent_at = None
+        self._answer_at = None
+        self._remote_sdp = ""
         with trace.stage("load WebRTC libraries", "import the WebRTC engine (aiortc)"):
             from aiortc import RTCConfiguration, RTCPeerConnection
 
@@ -540,18 +620,24 @@ class CustomerSession:
                 protocol.SIGNAL_OFFER,
                 {"type": "offer", "sdp": pc.localDescription.sdp},
             )
+        self._offer_sent_at = time.monotonic()
         # WebRTC establishment watchdog.
         asyncio.create_task(self._webrtc_watchdog(cfg.connect_timeout))
 
     async def _webrtc_watchdog(self, delay: float) -> None:
         await asyncio.sleep(delay)
         if self.state == CustomerState.CONNECTING_SESSION:
-            await self.end_session(
+            exc = TimeoutError(
                 "could not establish a connection to the technician within "
                 f"{delay:.0f}s (network may block peer-to-peer traffic; a TURN "
-                "relay may be required)",
-                failed=True,
+                "relay may be required)"
             )
+            self._record_failure(
+                exc,
+                "establishing the peer-to-peer connection",
+                details=self._connection_diagnostics(),
+            )
+            await self.end_session(str(exc), failed=True)
 
     # ----------------------------------------------------------------- input
 

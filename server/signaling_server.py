@@ -24,6 +24,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
+import hashlib
+import hmac
 import json
 import logging
 import os
@@ -40,6 +43,21 @@ from app import config
 log = logging.getLogger("support.signaling-server")
 
 DEFAULT_STUN = ["stun:stun.l.google.com:19302"]
+
+
+def _mint_turn_credentials(secret: str, lifetime_days: int = 30) -> tuple[str, str]:
+    """Long-term TURN credentials for a coturn static-auth-secret relay.
+
+    Username is "<expiry-unix>:<name>" and the credential is
+    base64(HMAC-SHA1(secret, username)) - the same scheme coturn (and
+    Open Relay's staticauth endpoint) validates.
+    """
+    expiry = int(time.time() + lifetime_days * 86400)
+    username = f"{expiry}:tech-support"
+    credential = base64.b64encode(
+        hmac.new(secret.encode(), username.encode(), hashlib.sha1).digest()
+    ).decode()
+    return username, credential
 
 # Seconds of silence after which a waiting peer counts as dead.  Real clients
 # ping every 20 s, so 90 s tolerates slow links while still reclaiming
@@ -151,7 +169,27 @@ def _load_ice_servers(args) -> list:
                 return servers
         except ValueError as exc:
             raise SystemExit(f"--ice-servers is not valid JSON: {exc}")
-    return [{"urls": u} for u in DEFAULT_STUN]
+    servers = [{"urls": u} for u in DEFAULT_STUN]
+
+    # Optional TURN relay: without one, peers behind symmetric NATs or with
+    # UDP blocked can never connect.  TECH_SUPPORT_TURN_URL points at the
+    # relay; credentials come from a static-auth secret (minted here) or are
+    # given directly.  Example:
+    #   TECH_SUPPORT_TURN_URL=turns:staticauth.openrelay.metered.ca:443?transport=tcp
+    #   TECH_SUPPORT_TURN_SECRET=openrelayprojectsecret
+    turn_url = os.environ.get("TECH_SUPPORT_TURN_URL", "").strip()
+    if turn_url:
+        username = os.environ.get("TECH_SUPPORT_TURN_USERNAME", "").strip()
+        credential = os.environ.get("TECH_SUPPORT_TURN_PASSWORD", "")
+        secret = os.environ.get("TECH_SUPPORT_TURN_SECRET", "").strip()
+        if secret and not username:
+            username, credential = _mint_turn_credentials(secret)
+        entry: dict = {"urls": turn_url}
+        if username:
+            entry["username"] = username
+            entry["credential"] = credential
+        servers.append(entry)
+    return servers
 
 
 def build_app(tech_token: str, ice_servers: list,
