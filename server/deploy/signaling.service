@@ -1,0 +1,31 @@
+# Remote support signaling server - systemd unit
+# Place at /etc/systemd/system/support-signaling.service
+# Adjust paths, the technician token and the ICE server list, then:
+#   sudo systemctl daemon-reload && sudo systemctl enable --now support-signaling
+
+[Unit]
+Description=Remote support signaling server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/support-signaling
+Environment=SUPPORT_TECH_TOKEN=PASTE-YOUR-RANDOM-TOKEN-HERE
+Environment=ICE_SERVERS_JSON=[{"urls":"stun:support.example.com:3478"},{"urls":"turn:support.example.com:3478","username":"support","credential":"PASTE-TURN-SECRET"}]
+ExecStart=/opt/support-signaling/.venv/bin/python -m server.signaling_server --host 127.0.0.1 --port 8787
+Restart=on-failure
+RestartSec=3
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/support-signaling
+LimitNOFILE=16384
+
+[Install]
+WantedBy=multi-user.target

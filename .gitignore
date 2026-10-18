@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+config.env
+build/
+dist/
+tests/artifacts/
+.pytest_cache/
+*.AppImage

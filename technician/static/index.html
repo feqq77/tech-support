@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Technician Console</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header>
+    <h1>Technician Console</h1>
+    <div class="header-right">
+      <span id="status" class="pill pill-off">disconnected</span>
+      <button id="end-btn" class="btn btn-danger" disabled>End session</button>
+    </div>
+  </header>
+
+  <section id="join-bar">
+    <label for="code-input">Support code</label>
+    <input id="code-input" type="text" inputmode="numeric" autocomplete="off"
+           placeholder="e.g. 1234" maxlength="16">
+    <button id="connect-btn" class="btn btn-primary">Connect</button>
+    <span id="consent-badges">
+      <span id="badge-view" class="badge" hidden>view allowed</span>
+      <span id="badge-control" class="badge" hidden>control allowed</span>
+    </span>
+  </section>
+
+  <main>
+    <div id="screen-wrap" tabindex="0" title="Click the screen, then use mouse and keyboard">
+      <video id="remote-video" autoplay playsinline muted></video>
+      <div id="screen-overlay">no customer connected</div>
+    </div>
+    <p id="hint">Connect with a support code. When a customer joins and approves access,
+      their screen appears here. Click the screen to send mouse and keyboard input.
+      Press <kbd>End session</kbd> to stop remote access immediately.</p>
+    <div id="log"></div>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
